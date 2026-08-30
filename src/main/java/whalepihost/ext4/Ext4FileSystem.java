@@ -31,6 +31,10 @@ public class Ext4FileSystem implements Closeable {
 
     /** s_feature_incompat: group descriptors are 64 bytes and block numbers 64-bit. */
     private static final int INCOMPAT_64BIT = 0x0080;
+    /** s_feature_incompat: the superblock carries the checksum seed directly. */
+    private static final int INCOMPAT_CSUM_SEED = 0x2000;
+    /** s_feature_ro_compat: metadata carries CRC32C checksums. */
+    private static final int RO_COMPAT_METADATA_CSUM = 0x0400;
 
     /** The filesystem root always lives in inode 2. */
     public static final long ROOT_INODE = 2;
@@ -47,6 +51,8 @@ public class Ext4FileSystem implements Closeable {
     private final int descriptorSize;
     private final int state;
     private final String volumeName;
+    private final boolean metadataChecksums;
+    private final int checksumSeed;
 
     private Ext4FileSystem(BlockDevice device) throws IOException {
         this.device = device;
@@ -78,6 +84,15 @@ public class Ext4FileSystem implements Closeable {
                 | (sixtyFourBit ? ((sb.getInt(0x150) & 0xFFFFFFFFL) << 32) : 0);
 
         this.volumeName = readName(sb, 0x78, 16);
+
+        this.metadataChecksums = (sb.getInt(0x64) & RO_COMPAT_METADATA_CSUM) != 0;
+        if ((incompatible & INCOMPAT_CSUM_SEED) != 0) {
+            this.checksumSeed = sb.getInt(0x270);
+        } else {
+            byte[] uuid = new byte[16];
+            for (int i = 0; i < 16; i++) uuid[i] = sb.get(0x68 + i);
+            this.checksumSeed = Ext4Checksum.crc32c(~0, uuid);
+        }
 
         if (blockSize < 1024 || blockSize > 65536) {
             throw new Ext4Exception("Unsupported ext4 block size: " + blockSize);
@@ -135,6 +150,13 @@ public class Ext4FileSystem implements Closeable {
         long tableBlock = inodeTableBlock(group);
         long offset = tableBlock * (long) blockSize + indexInGroup * inodeSize;
         return new Ext4Inode(number, device.read(offset, Math.min(inodeSize, 256)));
+    }
+
+    /** Byte offset of an inode's record within the filesystem. */
+    private long inodeOffset(long number) throws IOException {
+        long group = (number - 1) / inodesPerGroup;
+        long indexInGroup = (number - 1) % inodesPerGroup;
+        return inodeTableBlock(group) * (long) blockSize + indexInGroup * inodeSize;
     }
 
     private long inodeTableBlock(long group) throws IOException {
@@ -300,6 +322,49 @@ public class Ext4FileSystem implements Closeable {
     }
 
     /**
+     * How many bytes a file could hold without allocating another block.
+     *
+     * <p>A file always occupies whole blocks, so a 911-byte settings file in a 4 KiB
+     * block has room for 4096. That spare space is what lets settings grow.
+     */
+    public long allocatedBytes(Ext4Inode inode) throws IOException {
+        long blocks = 0;
+        for (Extent extent : extents(inode)) {
+            blocks = Math.max(blocks, extent.logicalBlock() + extent.length());
+        }
+        return blocks * (long) blockSize;
+    }
+
+    /**
+     * Changes a file's recorded length, within the blocks it already owns.
+     *
+     * <p>Only {@code i_size} moves. The file's blocks, the block bitmaps, the group
+     * free counts and the directory entry are all unchanged, because no space is
+     * being allocated or released — the bytes were already the file's, just beyond
+     * its end. The inode's checksum is recomputed, since a modern ext4 would
+     * otherwise treat the inode as corrupt.
+     */
+    private void setSize(Ext4Inode inode, long newSize) throws IOException {
+        long capacity = allocatedBytes(inode);
+        if (newSize > capacity) {
+            throw new Ext4Exception("A file can only be resized within the blocks it already "
+                    + "has: " + capacity + " bytes here, but " + newSize + " were needed");
+        }
+        long offset = inodeOffset(inode.number());
+        byte[] raw = new byte[inodeSize];
+        device.readInto(offset, raw, 0, inodeSize);
+
+        ByteBuffer buffer = ByteBuffer.wrap(raw).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        buffer.putInt(0x04, (int) (newSize & 0xFFFFFFFFL));
+        buffer.putInt(0x6C, (int) (newSize >>> 32));
+
+        if (metadataChecksums) {
+            Ext4Checksum.applyInodeChecksum(raw, inodeSize, inode.number(), checksumSeed);
+        }
+        device.write(offset, raw, 0, inodeSize);
+    }
+
+    /**
      * Replaces a file's contents with exactly the same number of bytes.
      *
      * <p>This is deliberately the only write there is. Because the length does not
@@ -325,10 +390,11 @@ public class Ext4FileSystem implements Closeable {
         if (inode.hasInlineData()) {
             throw new Ext4Exception("Files with inline data cannot be rewritten");
         }
-        if (content.length != inode.size()) {
-            throw new Ext4Exception("In-place writes must keep the file the same length: "
-                    + "the file is " + inode.size() + " bytes but " + content.length
-                    + " were supplied");
+        long capacity = allocatedBytes(inode);
+        if (content.length > capacity) {
+            throw new Ext4Exception("The file has " + capacity + " bytes of space on the card "
+                    + "but " + content.length + " were supplied. Growing beyond a file's own "
+                    + "blocks needs space to be allocated, which is not done here.");
         }
 
         long blocks = (content.length + blockSize - 1) / blockSize;
@@ -352,6 +418,13 @@ public class Ext4FileSystem implements Closeable {
             }
             System.arraycopy(content, from, block, 0, length);
             device.write(physicalBlock(inode, index) * (long) blockSize, block, 0, blockSize);
+        }
+
+        // The data is on the card before the inode says how much of it counts, so a
+        // failure between the two leaves the file readable at its old length rather
+        // than claiming bytes that were never written.
+        if (content.length != inode.size()) {
+            setSize(inode, content.length);
         }
         device.flush();
     }

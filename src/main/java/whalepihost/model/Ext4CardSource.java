@@ -76,12 +76,18 @@ public class Ext4CardSource implements CardSource {
     }
 
     /**
-     * An unmounted card can only have a file rewritten at exactly its current length,
-     * so that is the capacity.
+     * An unmounted card cannot have space allocated to a file, so the ceiling is
+     * whatever the file's existing blocks hold — a small file in a 4 KiB block has
+     * far more room than its current length suggests.
      */
     @Override
     public long writeCapacity(CardFile file) {
-        return file.size();
+        if (!(file instanceof Ext4CardFile ext4File)) return file.size();
+        try {
+            return fs.allocatedBytes(ext4File.inode());
+        } catch (IOException e) {
+            return file.size();
+        }
     }
 
     @Override

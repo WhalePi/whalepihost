@@ -54,6 +54,7 @@ public class SettingsPane extends VBox {
     private final Button saveButton = new Button("Save to card");
     private final Button revertButton = new Button("Revert");
     private final Button whyButton = new Button("Why not?");
+    private final Label spaceLabel = new Label();
 
     private CardContents contents;
     private SettingsDocument document;
@@ -121,7 +122,9 @@ public class SettingsPane extends VBox {
         revertButton.setOnAction(e -> populate());
         revertButton.setDisable(true);
 
-        HBox footer = new HBox(10, revertButton, spacer(), saveButton);
+        spaceLabel.getStyleClass().add("path-label");
+
+        HBox footer = new HBox(10, revertButton, spacer(), spaceLabel, saveButton);
         footer.setAlignment(Pos.CENTER_LEFT);
         return footer;
     }
@@ -173,8 +176,8 @@ public class SettingsPane extends VBox {
             banner.getStyleClass().remove("hint-warning");
             banner.setText(capacity < 0
                     ? "Changes are written straight to the card."
-                    : "Changes are written in place, within the file's current "
-                      + capacity + " bytes.");
+                    : "Changes are written in place. This file has " + capacity
+                      + " bytes of space on the card.");
         } else {
             if (!banner.getStyleClass().contains("hint-warning")) {
                 banner.getStyleClass().add("hint-warning");
@@ -328,12 +331,56 @@ public class SettingsPane extends VBox {
                 + (serial.isBlank() ? "" : "   •   unit " + serial));
         saveButton.setDisable(true);
         revertButton.setDisable(true);
+        updateSpace();
     }
 
     private void markDirty() {
-        if (loading || contents == null || !contents.getSource().canWrite()) return;
+        if (loading || contents == null) return;
+        updateSpace();
+        if (!contents.getSource().canWrite()) return;
         saveButton.setDisable(false);
         revertButton.setDisable(false);
+    }
+
+    /**
+     * Shows how much of the file's space the current settings need.
+     *
+     * <p>On an unmounted card a file cannot be given more space, so the budget is
+     * real and worth watching while long paths are being typed.
+     */
+    private void updateSpace() {
+        if (document == null || settingsFile == null || contents == null) {
+            spaceLabel.setText("");
+            return;
+        }
+        long capacity = contents.getSource().writeCapacity(settingsFile);
+        if (capacity < 0) {
+            spaceLabel.setText("");
+            return;
+        }
+        SettingsDocument preview = snapshot();
+        int needed = preview == null ? 0 : preview.smallestLength();
+
+        spaceLabel.setText(needed + " of " + capacity + " bytes");
+        spaceLabel.getStyleClass().removeAll("status-error", "hint-warning");
+        if (needed > capacity) {
+            spaceLabel.getStyleClass().add("status-error");
+        } else if (needed > capacity * 0.9) {
+            spaceLabel.getStyleClass().add("hint-warning");
+        }
+    }
+
+    /** The document as the form currently stands, without disturbing the real one. */
+    private SettingsDocument snapshot() {
+        try {
+            SettingsDocument copy = SettingsDocument.parse(document.toJsonText());
+            for (Map.Entry<SettingsField, Control> entry : controls.entrySet()) {
+                copy.set(entry.getKey().key(), entry.getValue().get());
+            }
+            return copy;
+        } catch (IOException e) {
+            return null;
+        }
     }
 
     // -------------------------------------------------------------------- saving
@@ -357,7 +404,7 @@ public class SettingsPane extends VBox {
             long capacity = source.writeCapacity(settingsFile);
             byte[] bytes = capacity < 0
                     ? document.toBytes()
-                    : document.toBytes((int) capacity);
+                    : document.toBytes((int) settingsFile.size(), (int) capacity);
             source.write(settingsFile, bytes);
 
             verify();

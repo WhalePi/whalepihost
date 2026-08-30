@@ -93,28 +93,30 @@ Saving needs the card open for writing, which is a stricter thing than reading i
 | Card | Saving |
 |---|---|
 | Mounted (Linux, or Windows/macOS with a driver) | Ordinary file write. The file may grow or shrink freely. |
-| Unmounted ext4, read directly | Needs the program running as administrator, and the file is rewritten **in place at its current length**. |
+| Unmounted ext4, written directly | Needs the program running as administrator, and the file may only grow **within the blocks it already owns**. |
 
-### Why in place, and why that is safe
+### Why the direct writer is deliberately limited
 
-Writing to ext4 in general means allocating blocks, updating bitmaps and free counts, and
-recomputing the metadata checksums a modern ext4 keeps. Getting any of that wrong damages the
-filesystem, and the card usually holds a deployment's only copy of its data.
+Writing ext4 in general means allocating blocks, updating bitmaps and group free counts, and
+recomputing the checksums a modern ext4 keeps over its metadata. Getting any of that wrong
+damages the filesystem, and the card usually holds a deployment's only copy of its data.
 
-So the direct writer does exactly one thing: it replaces a file's contents with the **same number
-of bytes**. The file keeps the blocks it already has, so no allocation happens, no bitmap or free
-count changes, the directory is untouched, and the inode is not rewritten. Since ext4 checksums
-metadata but never file data, there is no checksum to recompute either. A filesystem that was
-consistent before the write is consistent after it. Anything that would change a file's length is
-refused rather than attempted.
+So the direct writer never allocates. A file already occupies whole blocks — a 961-byte settings
+file sits in a 4 KiB block, with 3 KB of that block already belonging to it but beyond the end of
+the file. Rewriting within those blocks needs no allocation, no bitmap or free-count change and
+no directory change, and since ext4 checksums metadata but never file data, the data itself needs
+no checksum. If the new contents are shorter than the file, the JSON is padded with trailing
+whitespace (which every JSON parser ignores) so even the inode stays untouched. If they are
+longer, only `i_size` moves, and the inode's CRC32C checksum is recomputed exactly as the kernel
+computes it. Anything that would need a new block is refused rather than attempted.
 
-To keep the length fixed, the JSON is padded with trailing whitespace, which every JSON parser
-ignores. Indented output is tried first and compact output second, which leaves plenty of room —
-the stock settings file is 961 bytes and renders to about 640 compact. If the settings genuinely
-will not fit, the save is refused with an explanation rather than half-done.
+In practice that gives roughly 3 KB of room on the 4 KiB blocks a Raspberry Pi uses — thousands
+of characters of extra path — and the Settings tab shows the running total (`962 of 4096 bytes`)
+so the limit is visible while you type rather than at the moment you save.
 
 Every save is read back off the card and compared field by field before it is reported as
-successful.
+successful. The write path is tested against ext4 images at both 1 KiB and 4 KiB block sizes,
+with `e2fsck` confirming the filesystem is still clean afterwards.
 
 ## Where the paths come from
 

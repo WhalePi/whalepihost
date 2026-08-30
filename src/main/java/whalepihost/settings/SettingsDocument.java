@@ -98,29 +98,48 @@ public class SettingsDocument {
     // ------------------------------------------------------------- serialisation
 
     /**
-     * Renders the file to exactly {@code targetLength} bytes.
+     * Renders the file to a length the card can accept.
      *
-     * <p>An in-place write on an unmounted ext4 card cannot change a file's length,
-     * so the JSON is padded with trailing whitespace — which every JSON parser
-     * ignores — until it is exactly the right size. Indented output is tried first
-     * and compact output second, which buys roughly a third more room before the
-     * limit really is reached.
+     * <p>A file on an unmounted card lives in whole blocks, so it can be rewritten at
+     * any length up to {@code maximum} — the space its blocks already hold. Staying at
+     * {@code preferred}, the length it has now, is better still, because then the
+     * inode does not have to be touched at all; the JSON is padded with trailing
+     * whitespace, which every parser ignores, to reach it.
      *
-     * @throws IOException if the settings will not fit even when written compactly
+     * <p>Indented output is tried first and compact output after, so long paths shrink
+     * the formatting before they exhaust the space.
+     *
+     * @param preferred the file's current length, kept when the settings still fit
+     * @param maximum   the most the file can be grown to without allocating a block
+     * @throws IOException if the settings will not fit even written compactly
      */
-    public byte[] toBytes(int targetLength) throws IOException {
+    public byte[] toBytes(int preferred, int maximum) throws IOException {
         for (int indent : new int[] { 4, 2, 0 }) {
             byte[] rendered = render(indent);
-            if (rendered.length <= targetLength) {
-                byte[] padded = Arrays.copyOf(rendered, targetLength);
-                Arrays.fill(padded, rendered.length, targetLength, (byte) ' ');
+            if (rendered.length <= preferred) {
+                byte[] padded = Arrays.copyOf(rendered, preferred);
+                Arrays.fill(padded, rendered.length, preferred, (byte) ' ');
                 return padded;
+            }
+            if (rendered.length <= maximum) {
+                return rendered; // the file grows to exactly this
             }
         }
         int shortest = render(0).length;
         throw new IOException("These settings need " + shortest + " bytes but the file on the "
-                + "card is only " + targetLength + " bytes, and an unmounted card cannot have "
-                + "its files resized.\n\nShorten one of the longer paths and try again.");
+                + "card has only " + maximum + " bytes of space, and a card that is not mounted "
+                + "cannot have more space allocated to a file.\n\nShorten one of the longer "
+                + "paths and try again.");
+    }
+
+    /** Bytes this would take written as compactly as possible. */
+    public int smallestLength() {
+        return render(0).length;
+    }
+
+    /** The current settings as JSON text, for copying the document. */
+    public String toJsonText() {
+        return root.toString();
     }
 
     /** Renders the file with no length constraint, for a normal filesystem write. */
