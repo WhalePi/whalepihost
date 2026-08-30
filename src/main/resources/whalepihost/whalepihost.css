@@ -88,6 +88,22 @@
     -fx-font-size: 11px;
 }
 
+/* A drive the computer cannot open, and why */
+.hint-warning {
+    -fx-text-fill: -wp-yellow;
+}
+
+.combo-box-popup .list-cell.cell-unavailable,
+.list-cell.cell-unavailable {
+    -fx-text-fill: -wp-grey;
+}
+
+.combo-box-popup .list-cell.cell-unavailable:filled:hover,
+.combo-box-popup .list-cell.cell-unavailable:filled:selected {
+    -fx-background-color: -wp-surface-light;
+    -fx-text-fill: -wp-text-dim;
+}
+
 .panel-body {
     -fx-padding: 12;
 }

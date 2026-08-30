@@ -57,7 +57,7 @@ public class MainView extends BorderPane {
     private final Stage stage;
 
     private final ComboBox<Volume> volumeBox = new ComboBox<>();
-    private final TextField sourceField = new TextField();
+    private final Label volumeDetail = new Label();
     private final Button scanButton = new Button("Read card");
 
     private final Label serialBadge = new Label("NO CARD");
@@ -140,36 +140,62 @@ public class MainView extends BorderPane {
     }
 
     private Node buildSourcePanel() {
-        volumeBox.setPrefWidth(280);
-        volumeBox.valueProperty().addListener((obs, old, value) -> {
-            if (value != null) sourceField.setText(value.path().toString());
-        });
+        volumeBox.setMaxWidth(Double.MAX_VALUE);
+        HBox.setHgrow(volumeBox, Priority.ALWAYS);
+        volumeBox.setButtonCell(new VolumeCell());
+        volumeBox.setCellFactory(list -> new VolumeCell());
+        volumeBox.valueProperty().addListener((obs, old, value) -> showVolumeDetail(value));
 
-        sourceField.setPromptText("Drive or folder holding the card contents");
-        HBox.setHgrow(sourceField, Priority.ALWAYS);
-
-        Button refresh = quietButton("Refresh drives", Icons.REFRESH);
+        Button refresh = quietButton("Refresh", Icons.REFRESH);
         refresh.setOnAction(e -> refreshVolumes());
-
-        Button browse = quietButton("Browse…", Icons.FOLDER_OPEN);
-        browse.setOnAction(e -> chooseSourceFolder());
 
         scanButton.setGraphic(Icons.of(Icons.SEARCH, 15, Palette.PRIMARY));
         scanButton.setOnAction(e -> startScan());
         scanButton.setDefaultButton(true);
 
-        HBox row1 = new HBox(10, new Label("Drive:"), volumeBox, refresh, spacer());
-        row1.setAlignment(Pos.CENTER_LEFT);
+        HBox row = new HBox(10, new Label("Card:"), volumeBox, refresh, scanButton);
+        row.setAlignment(Pos.CENTER_LEFT);
 
-        HBox row2 = new HBox(10, new Label("Path: "), sourceField, browse, scanButton);
-        row2.setAlignment(Pos.CENTER_LEFT);
+        volumeDetail.getStyleClass().add("panel-hint");
+        volumeDetail.setWrapText(true);
+        volumeDetail.setMinHeight(32);
 
-        Label hint = new Label("On Windows, mount the card's Linux partition (for example with "
-                + "DiskInternals Linux Reader) and point WhalePi Host at it.");
-        hint.getStyleClass().add("panel-hint");
-        hint.setWrapText(true);
+        return panel(1, "SD card", Icons.SD_CARD, new VBox(8, row, volumeDetail));
+    }
 
-        return panel(1, "SD card", Icons.SD_CARD, new VBox(10, row1, row2, hint));
+    /**
+     * Explains the highlighted drive, and blocks Read on one the computer cannot
+     * open – the WhalePi's ext4 data partition on a machine with no ext4 driver.
+     */
+    private void showVolumeDetail(Volume volume) {
+        if (volume == null) {
+            volumeDetail.setText("");
+            volumeDetail.getStyleClass().remove("hint-warning");
+            scanButton.setDisable(true);
+            return;
+        }
+        volumeDetail.setText(volume.detail());
+        volumeDetail.getStyleClass().remove("hint-warning");
+        if (!volume.isReadable()) volumeDetail.getStyleClass().add("hint-warning");
+        scanButton.setDisable(!volume.isReadable() || isBusy());
+    }
+
+    /** Greys out drives that cannot be opened, so the list explains itself. */
+    private static final class VolumeCell extends javafx.scene.control.ListCell<Volume> {
+        @Override
+        protected void updateItem(Volume volume, boolean empty) {
+            super.updateItem(volume, empty);
+            getStyleClass().remove("cell-unavailable");
+            if (empty || volume == null) {
+                setText(null);
+                setGraphic(null);
+                return;
+            }
+            setText(volume.toString());
+            setGraphic(Icons.of(Icons.SD_CARD, 13,
+                    volume.isReadable() ? Palette.PRIMARY : Palette.GREY));
+            if (!volume.isReadable()) getStyleClass().add("cell-unavailable");
+        }
     }
 
     private Node buildContentsPanel() {
@@ -277,29 +303,24 @@ public class MainView extends BorderPane {
     // ----------------------------------------------------------------- actions
 
     private void refreshVolumes() {
+        Volume previous = volumeBox.getValue();
         List<Volume> volumes = Volume.list();
         volumeBox.getItems().setAll(volumes);
-        if (!volumes.isEmpty() && volumeBox.getValue() == null) {
-            volumeBox.setValue(volumes.get(0));
-        }
         volumeBox.setDisable(volumes.isEmpty());
-        if (volumes.isEmpty()) {
-            volumeBox.setPromptText("No drives found – use Browse…");
-        }
-    }
 
-    private void chooseSourceFolder() {
-        DirectoryChooser chooser = new DirectoryChooser();
-        chooser.setTitle("Select the SD card or a folder containing its contents");
-        Path current = currentSource();
-        if (current != null && Files.isDirectory(current)) {
-            chooser.setInitialDirectory(current.toFile());
+        if (volumes.isEmpty()) {
+            volumeBox.setPromptText("No drives found – insert a card and press Refresh");
+            showVolumeDetail(null);
+            status("No drives found. Insert the WhalePi SD card, then press Refresh.",
+                    "status-error");
+            return;
         }
-        File chosen = chooser.showDialog(stage);
-        if (chosen != null) {
-            sourceField.setText(chosen.getAbsolutePath());
-            volumeBox.setValue(null);
-        }
+        // Keep the user's choice across a refresh where it still exists, otherwise
+        // land on the first drive that can actually be read.
+        Volume selected = volumes.contains(previous) ? previous
+                : volumes.stream().filter(Volume::isReadable).findFirst().orElse(volumes.get(0));
+        volumeBox.setValue(selected);
+        showVolumeDetail(selected);
     }
 
     private void chooseDestinationFolder() {
@@ -314,9 +335,14 @@ public class MainView extends BorderPane {
     }
 
     private void startScan() {
+        Volume volume = volumeBox.getValue();
+        if (volume != null && !volume.isReadable()) {
+            showError("This drive cannot be opened", volume.detail());
+            return;
+        }
         Path source = currentSource();
         if (source == null || !Files.isDirectory(source)) {
-            status("Choose a drive or folder to read first.", "status-error");
+            status("Choose a card to read first.", "status-error");
             return;
         }
 
@@ -398,14 +424,21 @@ public class MainView extends BorderPane {
 
     private void updateSelectionSummary() {
         if (contents == null) {
-            selectionSummary.setText("nothing");
+            setSelectionText("nothing", false);
             downloadButton.setDisable(true);
             return;
         }
         FolderStats totals = contents.selectedTotals();
-        selectionSummary.setText(totals.fileCount() + " files, "
-                + CardScanner.formatBytes(totals.totalBytes()));
+        setSelectionText(totals.fileCount() + " files, "
+                + CardScanner.formatBytes(totals.totalBytes()), totals.fileCount() > 0);
         downloadButton.setDisable(totals.fileCount() == 0 || isBusy());
+    }
+
+    /** Green once there is something to download, dim while there is not. */
+    private void setSelectionText(String text, boolean anything) {
+        selectionSummary.setText(text);
+        selectionSummary.getStyleClass().setAll("label",
+                anything ? "summary-value" : "summary-label");
     }
 
     private void startDownload() {
@@ -549,9 +582,9 @@ public class MainView extends BorderPane {
     }
 
     private void setBusy(boolean busy, String message) {
-        scanButton.setDisable(busy);
+        Volume volume = volumeBox.getValue();
+        scanButton.setDisable(busy || volume == null || !volume.isReadable());
         volumeBox.setDisable(busy || volumeBox.getItems().isEmpty());
-        sourceField.setDisable(busy);
         destField.setDisable(busy);
         selectAllButton.setDisable(busy || contents == null);
         selectNoneButton.setDisable(busy || contents == null);
@@ -573,7 +606,7 @@ public class MainView extends BorderPane {
         if (!loaded) {
             tree.setRoot(null);
             contents = null;
-            selectionSummary.setText("nothing");
+            setSelectionText("nothing", false);
             serialBadge.setText("NO CARD");
             if (!serialBadge.getStyleClass().contains("serial-badge-idle")) {
                 serialBadge.getStyleClass().add("serial-badge-idle");
@@ -593,13 +626,8 @@ public class MainView extends BorderPane {
     }
 
     private Path currentSource() {
-        String text = sourceField.getText();
-        if (text == null || text.isBlank()) return null;
-        try {
-            return Paths.get(text.trim());
-        } catch (RuntimeException e) {
-            return null;
-        }
+        Volume volume = volumeBox.getValue();
+        return volume == null ? null : volume.path();
     }
 
     private Path destinationParent() {

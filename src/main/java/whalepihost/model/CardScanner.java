@@ -50,8 +50,7 @@ public final class CardScanner {
         note(progress, "Looking for " + SettingsReader.SETTINGS_FILE_NAME + "…");
         Path settingsFile = findSettingsFile(root, progress);
         if (settingsFile == null) {
-            throw new IOException("No " + SettingsReader.SETTINGS_FILE_NAME + " found under "
-                    + root + ".\n\nSelect the drive or folder containing the WhalePi SD card contents.");
+            throw new IOException(noSettingsMessage(root));
         }
 
         note(progress, "Reading settings…");
@@ -70,6 +69,30 @@ public final class CardScanner {
         tree.rollUpCounts();
         contents.setRoot(tree);
         return contents;
+    }
+
+    /**
+     * Explains a failed scan. Reading the Pi's little FAT boot partition is the
+     * overwhelmingly common mistake, because on macOS and Windows it is the only
+     * part of the card that mounts – so name it rather than saying "not found".
+     */
+    private static String noSettingsMessage(Path root) {
+        if (looksLikeBootPartition(root)) {
+            return "This is the WhalePi's boot partition, which holds the Raspberry Pi's "
+                    + "start-up files rather than any recordings.\n\n"
+                    + "The recordings, database and binary files live on the card's other "
+                    + "partition, which uses the Linux ext4 filesystem. Windows and macOS cannot "
+                    + "read that on their own — install an ext4 driver, then read the card again.";
+        }
+        return "No " + SettingsReader.SETTINGS_FILE_NAME + " found on " + root + ".\n\n"
+                + "This does not look like a WhalePi card. Choose the drive holding the card's "
+                + "Linux partition and try again.";
+    }
+
+    /** A Raspberry Pi boot partition always carries these two files. */
+    private static boolean looksLikeBootPartition(Path root) {
+        return Files.isRegularFile(root.resolve("config.txt"))
+                && Files.isRegularFile(root.resolve("cmdline.txt"));
     }
 
     // ------------------------------------------------------------------ groups

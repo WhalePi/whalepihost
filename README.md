@@ -13,8 +13,9 @@ to your computer.
 
 ## What it does
 
-1. **Pick the card** – choose a mounted drive from the list, or browse to any folder holding the
-   card's contents.
+1. **Pick the card** – choose it from the drive list and press Read. Partitions the computer can
+   see but has not mounted are listed too, greyed out, with an explanation of what to do about
+   them (see below).
 2. **See what's on it** – WhalePi Host finds `whalepidog_settings.json`, reads the unit's serial
    number and the configured paths from it, then reports the file count and total size of:
    - the **sound recordings** folder, broken down by day folder (`yyyymmdd`)
@@ -28,18 +29,33 @@ to your computer.
 The unit's serial number (the `identification` field in the Bluetooth settings) is shown in the
 top right of the window and used to name the download folder.
 
-## Getting the card readable
+## Why the card may look far too small
 
-The WhalePi's data partition is `ext4`, which macOS and Windows cannot read on their own:
+A WhalePi SD card has two partitions:
+
+| Partition | Filesystem | Holds |
+|---|---|---|
+| `bootfs` (~500 MB) | FAT32 | the Raspberry Pi's start-up files |
+| the rest of the card | **ext4** | `PAMRecordings`, the database, the binaries — everything you want |
+
+Windows and macOS can read FAT32 but not ext4, so out of the box they mount only the small
+`bootfs` partition and ignore the large one. A 1 TB card shows up as a 500 MB drive with nothing
+useful on it.
+
+WhalePi Host detects this rather than leaving you guessing: the unmounted ext4 partition appears
+in the drive list, greyed out and with its real size, and reading `bootfs` by mistake gives an
+error that says what has happened.
+
+To reach the data:
 
 | Platform | What to do |
 |---|---|
-| Windows | Mount the card with a Linux filesystem reader such as DiskInternals Linux Reader, then point WhalePi Host at the mounted folder |
-| macOS   | Use an ext4 driver (for example extFS for Mac), or read the card on a Linux machine |
-| Linux   | The card mounts natively under `/media` or `/mnt` |
+| Windows | Install an ext4 driver such as Linux File Systems for Windows or Paragon extFS, so the partition gets a drive letter |
+| macOS   | Install an ext4 driver such as extFS for Mac |
+| Linux   | Nothing — the card mounts natively under `/media` or `/mnt` |
 
-WhalePi Host also works on a plain folder — so if you have already copied the card contents onto
-a computer or an external drive, you can browse to that instead.
+Alternatively, copy the data off using any Linux computer, or leave the Pi powered, attach a USB
+drive and send the `copywavdata` command from the phone app.
 
 ## Where the paths come from
 
@@ -130,7 +146,7 @@ src/main/java/whalepihost/
     CardContents.java        a scanned card
     DataNode.java            one row of the contents tree
     FolderStats.java         recursive file count and size
-    Volume.java              mounted drives to offer as sources
+    Volume.java              the drive list, including unmounted ext4 partitions
   copy/
     ScanJob.java             background scan
     CopyJob.java             background copy, with byte-level progress
