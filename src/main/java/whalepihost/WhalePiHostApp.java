@@ -29,6 +29,8 @@ public class WhalePiHostApp extends Application {
         stage.setMinWidth(820);
         stage.setMinHeight(640);
         stage.setScene(scene);
+        // A card read straight off its device holds that device open until released.
+        stage.setOnHidden(e -> view.dispose());
         stage.show();
     }
 }

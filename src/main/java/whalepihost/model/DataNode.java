@@ -1,6 +1,5 @@
 package whalepihost.model;
 
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -30,7 +29,7 @@ public class DataNode {
     }
 
     private final String name;
-    private final Path source;
+    private final CardFile source;
     private final String destRelative;
     private final Kind kind;
     private final boolean copyUnit;
@@ -50,12 +49,13 @@ public class DataNode {
 
     /**
      * @param name         text shown in the Item column
-     * @param source       where the data lives on the mounted card (null for a pure group)
+     * @param source       where the data lives on the card (null for a pure group)
      * @param destRelative path, relative to the chosen download folder, to copy into
      * @param kind         icon / category
      * @param copyUnit     true if selecting this node copies {@code source} (file or folder)
      */
-    public DataNode(String name, Path source, String destRelative, Kind kind, boolean copyUnit) {
+    public DataNode(String name, CardFile source, String destRelative, Kind kind,
+                    boolean copyUnit) {
         this.name = name;
         this.source = source;
         this.destRelative = destRelative;
@@ -68,7 +68,7 @@ public class DataNode {
     }
 
     public String getName() { return name; }
-    public Path getSource() { return source; }
+    public CardFile getSource() { return source; }
     public String getDestRelative() { return destRelative; }
     public Kind getKind() { return kind; }
     public boolean isCopyUnit() { return copyUnit; }

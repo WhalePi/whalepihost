@@ -1,7 +1,5 @@
 package whalepihost.model;
 
-import java.nio.file.Path;
-
 /**
  * The handful of values WhalePi Host needs out of {@code whalepidog_settings.json}.
  *
@@ -11,7 +9,8 @@ import java.nio.file.Path;
  */
 public class WhalePiSettings {
 
-    private Path settingsFile;
+    private String settingsPath = "";
+    private CardFile settingsFileHandle;
 
     private String identification = "";
     private String recordingFolder = "";
@@ -21,9 +20,13 @@ public class WhalePiSettings {
     private String recordingPrefix = "";
     private String recordingType = "";
 
-    /** Location of the settings file itself on the mounted card. */
-    public Path getSettingsFile() { return settingsFile; }
-    public void setSettingsFile(Path settingsFile) { this.settingsFile = settingsFile; }
+    /** Where the settings file was found, for display. */
+    public String getSettingsPath() { return settingsPath; }
+    public void setSettingsPath(String settingsPath) { this.settingsPath = settingsPath; }
+
+    /** The settings file itself, so it can be copied along with the data. */
+    public CardFile getSettingsFileHandle() { return settingsFileHandle; }
+    public void setSettingsFileHandle(CardFile handle) { this.settingsFileHandle = handle; }
 
     /** Bluetooth {@code identification} string – the unit's serial number, e.g. "1A". */
     public String getIdentification() { return identification; }

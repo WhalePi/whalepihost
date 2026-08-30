@@ -1,9 +1,6 @@
 package whalepihost.model;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
 
 import org.json.JSONObject;
 
@@ -20,17 +17,20 @@ public final class SettingsReader {
 
     private SettingsReader() { }
 
-    public static WhalePiSettings read(Path file) throws IOException {
-        String json = Files.readString(file, StandardCharsets.UTF_8);
+    /**
+     * @param json  the file's contents
+     * @param where the file's location, used only in error messages
+     */
+    public static WhalePiSettings parse(String json, String where) throws IOException {
         JSONObject jo;
         try {
             jo = new JSONObject(json);
         } catch (RuntimeException e) {
-            throw new IOException("Not a valid WhalePi settings file: " + file, e);
+            throw new IOException("Not a valid WhalePi settings file: " + where, e);
         }
 
         WhalePiSettings s = new WhalePiSettings();
-        s.setSettingsFile(file);
+        s.setSettingsPath(where);
 
         s.setRecordingFolder(string(jo, "recordingFolder", "wavFolder"));
         s.setDatabase(string(jo, "database", "databaseFile"));

@@ -3,9 +3,9 @@
 A small desktop program for getting data off a [WhalePi](https://www.pamguard.org/) SD card.
 
 When a WhalePi deployment finishes, the recordings, database and PAMGuard binary files are all
-on the Pi's SD card. Rather than picking through Linux folders by hand with a tool like
-DiskInternals, put the card in a card reader, point WhalePi Host at it, and copy what you want
-to your computer.
+on the Pi's SD card — on a Linux ext4 partition that Windows and macOS cannot normally read.
+WhalePi Host reads that partition itself, with no driver to install: put the card in a reader,
+pick it from the list, and copy off what you want.
 
 ![WhalePi Host](docs/screenshot.png)
 
@@ -29,7 +29,7 @@ to your computer.
 The unit's serial number (the `identification` field in the Bluetooth settings) is shown in the
 top right of the window and used to name the download folder.
 
-## Why the card may look far too small
+## Reading the card: no driver needed
 
 A WhalePi SD card has two partitions:
 
@@ -38,24 +38,42 @@ A WhalePi SD card has two partitions:
 | `bootfs` (~500 MB) | FAT32 | the Raspberry Pi's start-up files |
 | the rest of the card | **ext4** | `PAMRecordings`, the database, the binaries — everything you want |
 
-Windows and macOS can read FAT32 but not ext4, so out of the box they mount only the small
-`bootfs` partition and ignore the large one. A 1 TB card shows up as a 500 MB drive with nothing
-useful on it.
+Windows and macOS understand FAT32 but not ext4, so they mount only the small `bootfs`
+partition and ignore the large one. A 1 TB card turns up as a 500 MB drive with nothing useful
+on it, and the usual advice — install an ext4 driver — is no help on a managed machine where
+you are not allowed to.
 
-WhalePi Host detects this rather than leaving you guessing: the unmounted ext4 partition appears
-in the drive list, greyed out and with its real size, and reading `bootfs` by mistake gives an
-error that says what has happened.
+**WhalePi Host reads ext4 itself.** It parses the filesystem in user space, straight off the
+partition: superblock, block group descriptors, inodes, extent trees and directory entries. It
+mounts nothing, installs nothing, loads no kernel extension and writes nothing to the card. The
+unmounted data partition simply appears in the card list, ready to read.
 
-To reach the data:
+### Permission to read the disk
 
-| Platform | What to do |
+Reading a partition directly means opening its device node, and the operating system guards
+those:
+
+| Platform | What is needed |
 |---|---|
-| Windows | Install an ext4 driver such as Linux File Systems for Windows or Paragon extFS, so the partition gets a drive letter |
-| macOS   | Install an ext4 driver such as extFS for Mac |
-| Linux   | Nothing — the card mounts natively under `/media` or `/mnt` |
+| macOS | Raw disks are `root:operator`. Join that group once: `sudo dseditgroup -o edit -a $USER -t user operator`, then log out and back in. WhalePi Host shows this command, with your user name filled in, when it is needed. |
+| Windows | Run WhalePi Host as Administrator. |
+| Linux | Usually already fine; otherwise join the `disk` group. |
 
-Alternatively, copy the data off using any Linux computer, or leave the Pi powered, attach a USB
-drive and send the `copywavdata` command from the phone app.
+That is a permission change, not a system change: nothing is installed and no kernel extension
+is loaded. If you would rather not, the alternatives are to copy the data off with any Linux
+computer, or to leave the Pi powered, attach a USB drive and send the `copywavdata` command
+from the phone app.
+
+### What the reader supports
+
+Extent-mapped and older indirect-mapped files, 64-bit filesystems, `flex_bg`, sparse files,
+files of any size, and directories of any size. Metadata checksums are not verified, which is
+harmless when only reading.
+
+The journal is **not** replayed. A card pulled out of a running Pi may have its newest few
+writes sitting in the journal; WhalePi Host notices that the filesystem was not cleanly
+unmounted and says so, and everything already written reads correctly. Shut the Pi down
+properly before removing the card and the question does not arise.
 
 ## Where the paths come from
 
@@ -142,11 +160,22 @@ src/main/java/whalepihost/
   model/
     SettingsReader.java      parses whalepidog_settings.json
     WhalePiSettings.java     the values read from it
-    CardScanner.java         finds the deployment and re-anchors the Pi paths
+    CardScanner.java         finds the deployment and reads what is on it
+    CardSource.java          an opened card: a mount, or a raw ext4 partition
+    CardFile.java            a file or folder, whichever kind of card it is on
+    LocalCardSource.java     a card the OS has mounted
+    Ext4CardSource.java      a card read directly off its ext4 partition
     CardContents.java        a scanned card
     DataNode.java            one row of the contents tree
     FolderStats.java         recursive file count and size
-    Volume.java              the drive list, including unmounted ext4 partitions
+    Volume.java              the card list, including unmounted ext4 partitions
+  ext4/
+    Ext4FileSystem.java      the read-only ext2/3/4 reader
+    BlockDevice.java         aligned, cached reads over a device or image
+    Ext4Inode.java           one inode
+    Ext4DirEntry.java        one directory entry
+    Extent.java              a run of blocks
+    Ext4InputStream.java     streams a file's contents
   copy/
     ScanJob.java             background scan
     CopyJob.java             background copy, with byte-level progress

@@ -2,8 +2,8 @@ package whalepihost.model;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.RandomAccessFile;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.FileStore;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -13,41 +13,52 @@ import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 
-/**
- * A drive the user can pick as the source card.
- *
- * <p>Two kinds appear in the list. A <em>readable</em> volume is mounted and can be
- * read straight away. An <em>unreadable</em> one is a partition the computer can see
- * but has not mounted – almost always the WhalePi's ext4 data partition on a Mac or
- * Windows machine with no ext4 driver. Listing those matters: without them a user
- * with a 1 TB card sees only its 537 MB boot partition and no hint as to why.
- */
-public record Volume(Path path, String label, String detail, long totalBytes, boolean readable) {
+import whalepihost.ext4.Ext4FileSystem;
 
-    /** Ready to read: mounted, with a real path behind it. */
+/**
+ * A card the user can choose to read.
+ *
+ * <p>Three kinds turn up. A <em>mounted</em> volume is read through the operating
+ * system. An <em>ext4 partition</em> is one the system refused to mount because it
+ * does not understand ext4 — WhalePi Host reads those itself, straight off the device.
+ * An <em>unreadable</em> entry is one it can see but cannot open, which in practice
+ * means the account lacks permission to read raw disks; {@link #detail()} then says
+ * how to fix that.
+ */
+public record Volume(Path path, Path device, String label, String detail,
+                     String remedy, long totalBytes, boolean readable) {
+
+    /** Steps the user can take to make an unreadable card readable, or "" if none. */
+    public boolean hasRemedy() {
+        return remedy != null && !remedy.isBlank();
+    }
+
+    /** Ready to read, one way or the other. */
     public boolean isReadable() {
-        return readable && path != null;
+        return readable && (path != null || device != null);
+    }
+
+    /** True if reading this means parsing ext4 ourselves rather than using a mount. */
+    public boolean isRawExt4() {
+        return device != null;
     }
 
     @Override
     public String toString() {
         StringBuilder text = new StringBuilder(label);
         if (totalBytes > 0) text.append("  (").append(CardScanner.formatBytes(totalBytes)).append(')');
-        if (!readable) text.append("  —  cannot be opened");
+        if (!readable) text.append("  —  needs permission");
         return text.toString();
     }
 
-    /**
-     * Every drive worth offering: the mounted volumes, plus any partition the
-     * machine can see but has not mounted.
-     */
+    /** Mounted volumes plus any ext4 partition the system left alone. */
     public static List<Volume> list() {
         List<Volume> volumes = new ArrayList<>();
         String os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
 
         if (os.contains("mac")) {
             addChildren(volumes, Paths.get("/Volumes"));
-            addUnmountedMacPartitions(volumes);
+            addMacExt4Partitions(volumes);
         } else if (os.contains("linux")) {
             String user = System.getProperty("user.name", "");
             addChildren(volumes, Paths.get("/media", user));
@@ -57,11 +68,13 @@ public record Volume(Path path, String label, String detail, long totalBytes, bo
         } else {
             File[] roots = File.listRoots();
             if (roots != null) {
-                for (File root : roots) add(volumes, root.toPath());
+                for (File root : roots) addMounted(volumes, root.toPath());
             }
         }
-        // Readable drives first, then alphabetically.
+        // Cards we can actually read come first; within that, ext4 partitions lead,
+        // since a WhalePi card's data always lives on one.
         volumes.sort(Comparator.comparing(Volume::readable).reversed()
+                .thenComparing(Comparator.comparing(Volume::isRawExt4).reversed())
                 .thenComparing(v -> v.label().toLowerCase(Locale.ROOT)));
         return volumes;
     }
@@ -71,13 +84,13 @@ public record Volume(Path path, String label, String detail, long totalBytes, bo
         try (var stream = Files.list(parent)) {
             stream.filter(Files::isDirectory)
                   .filter(p -> !p.getFileName().toString().startsWith("."))
-                  .forEach(p -> add(out, p));
+                  .forEach(p -> addMounted(out, p));
         } catch (IOException ignored) {
             // an unreadable mount point simply doesn't get listed
         }
     }
 
-    private static void add(List<Volume> out, Path path) {
+    private static void addMounted(List<Volume> out, Path path) {
         if (out.stream().anyMatch(v -> path.equals(v.path()))) return;
         Path fileName = path.getFileName();
         String name = fileName == null ? path.toString() : fileName.toString();
@@ -87,62 +100,101 @@ public record Volume(Path path, String label, String detail, long totalBytes, bo
         } catch (IOException ignored) {
             // size is cosmetic; carry on without it
         }
-        out.add(new Volume(path, name, path.toString(), size, true));
+        out.add(new Volume(path, null, name, path.toString(), "", size, true));
     }
 
-    // ------------------------------------------------- unmounted macOS partitions
+    // ------------------------------------------------------- macOS ext4 partitions
 
     /**
-     * Adds the partitions macOS can see but has not mounted.
+     * Finds the ext4 partitions macOS has not mounted.
      *
-     * <p>A WhalePi card is an MS-DOS {@code bootfs} partition plus a large ext4 one.
-     * macOS mounts the first and ignores the second, so the data partition has to be
-     * reported here or the card looks like a 500 MB stick.
+     * <p>A WhalePi card is a small FAT32 {@code bootfs} partition plus a large ext4
+     * one. macOS mounts the first and ignores the second, so without this the card
+     * looks like a 500 MB stick with nothing on it.
      */
-    private static void addUnmountedMacPartitions(List<Volume> out) {
+    private static void addMacExt4Partitions(List<Volume> out) {
         String listing = run("diskutil", "list");
         if (listing.isEmpty()) return;
         String mounts = run("/sbin/mount");
 
-        boolean externalDisk = false;
+        boolean external = false;
         for (String line : listing.split("\n")) {
             if (line.startsWith("/dev/disk")) {
-                // Only removable media; internal containers are never the card.
-                externalDisk = line.contains("(external, physical)");
+                external = line.contains("(external, physical)");
                 continue;
             }
-            if (!externalDisk) continue;
+            if (!external) continue;
 
             Partition partition = Partition.parse(line);
-            // Only the Linux partition is worth reporting; an unmounted EFI or
-            // recovery slice is just noise in the drive list.
             if (partition == null || !partition.isLinux()) continue;
             if (mounts.contains("/dev/" + partition.identifier() + " ")) continue;
 
-            out.add(new Volume(null, partition.describe(), partition.advice(),
-                    partition.sizeBytes(), false));
+            out.add(probe(partition));
         }
     }
 
-    /** One row of {@code diskutil list} output. */
+    /**
+     * Works out whether a partition can actually be opened and read.
+     *
+     * <p>Raw disk devices are {@code root:operator}, so an ordinary account is refused.
+     * Saying so here — with the one command that fixes it — beats letting the user pick
+     * the card and hit the failure afterwards.
+     */
+    private static Volume probe(Partition partition) {
+        Path raw = Paths.get("/dev/r" + partition.identifier());
+        Path block = Paths.get("/dev/" + partition.identifier());
+        Path device = Files.exists(raw) ? raw : block;
+
+        String label = "WhalePi data partition on " + partition.identifier();
+
+        if (!canRead(device)) {
+            String user = System.getProperty("user.name", "$USER");
+            return new Volume(null, null, label,
+                    "Found, but this account is not allowed to read raw disks yet.",
+                    "WhalePi Host can read this card without any driver, but macOS only lets "
+                    + "members of the \"operator\" group read a disk directly.\n\n"
+                    + "Grant that once by running this in Terminal:\n\n"
+                    + "    sudo dseditgroup -o edit -a " + user + " -t user operator\n\n"
+                    + "Then log out, log back in, and press Refresh.\n\n"
+                    + "This installs no software and makes no kernel or system changes — it only "
+                    + "adds your account to a group macOS already uses for disk access.",
+                    partition.sizeBytes(), false);
+        }
+        if (!Ext4FileSystem.looksLikeExt4(device)) {
+            return new Volume(null, null, label,
+                    "Not an ext4 filesystem, so it holds no WhalePi data.", "",
+                    partition.sizeBytes(), false);
+        }
+        return new Volume(null, device, label,
+                "ext4 — read directly by WhalePi Host, no driver needed  (" + device + ")", "",
+                partition.sizeBytes(), true);
+    }
+
+    private static boolean canRead(Path device) {
+        try (RandomAccessFile file = new RandomAccessFile(device.toFile(), "r")) {
+            return file.getChannel().read(java.nio.ByteBuffer.allocate(4096), 0) > 0;
+        } catch (IOException | RuntimeException e) {
+            return false;
+        }
+    }
+
+    /** One partition row of {@code diskutil list} output. */
     private record Partition(String identifier, String typeAndName, long sizeBytes) {
 
         /**
          * Rows look like:
          * <pre>
-         *    2:                      Linux                         1.0 TB     disk10s2
-         *    1:             Windows_FAT_32 bootfs                  536.9 MB   disk10s1
+         *    2:                      Linux                         1.0 TB     disk6s2
          * </pre>
-         * The identifier is the last field and the size the two before it; everything
-         * between the index and the size is the type, optionally followed by a name.
+         * The identifier is the last field and the size the two before it; whatever
+         * lies between the index and the size is the type, and maybe a name.
          */
         static Partition parse(String line) {
             String[] parts = line.trim().split("\\s+");
             if (parts.length < 5 || !parts[0].matches("\\d+:")) return null;
 
             String identifier = parts[parts.length - 1];
-            // Whole-disk rows (identifier "disk10") are not partitions.
-            if (!identifier.matches("disk\\d+s\\d+")) return null;
+            if (!identifier.matches("disk\\d+s\\d+")) return null; // whole-disk row
 
             long bytes = toBytes(parts[parts.length - 3], parts[parts.length - 2]);
             StringBuilder type = new StringBuilder();
@@ -155,17 +207,6 @@ public record Volume(Path path, String label, String detail, long totalBytes, bo
 
         boolean isLinux() {
             return typeAndName.contains("Linux");
-        }
-
-        String describe() {
-            return "Linux data partition on " + identifier;
-        }
-
-        String advice() {
-            return "This is where WhalePi stores its recordings, but macOS cannot read the Linux "
-                    + "(ext4) filesystem it uses, so it has not been mounted. Install an ext4 "
-                    + "driver such as extFS for Mac and read the card again, or copy the data off "
-                    + "using a Linux computer.";
         }
 
         private static long toBytes(String value, String unit) {

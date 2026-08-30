@@ -1,22 +1,21 @@
 package whalepihost.model;
 
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
 /** Everything a scan found on one card: its settings and the selectable data tree. */
 public class CardContents {
 
-    private final Path cardRoot;
+    private final CardSource source;
     private final WhalePiSettings settings;
     private DataNode root;
 
-    public CardContents(Path cardRoot, WhalePiSettings settings) {
-        this.cardRoot = cardRoot;
+    public CardContents(CardSource source, WhalePiSettings settings) {
+        this.source = source;
         this.settings = settings;
     }
 
-    public Path getCardRoot() { return cardRoot; }
+    public CardSource getSource() { return source; }
     public WhalePiSettings getSettings() { return settings; }
 
     public DataNode getRoot() { return root; }

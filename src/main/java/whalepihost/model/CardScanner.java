@@ -1,37 +1,39 @@
 package whalepihost.model;
 
 import java.io.IOException;
-import java.nio.file.FileVisitResult;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.nio.file.SimpleFileVisitor;
-import java.nio.file.attribute.BasicFileAttributes;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
-import java.util.Set;
 
 /**
- * Finds a WhalePi deployment on a mounted SD card (or any folder holding a copy
- * of one) and works out where its data actually lives.
+ * Finds a WhalePi deployment on an opened card and works out what is on it.
  *
- * <p>The settings file records Pi paths such as {@code /home/whalepi/PAMRecordings}.
- * On a card mounted at, say, {@code /Volumes/rootfs} the same data is at
- * {@code /Volumes/rootfs/home/whalepi/PAMRecordings}, so every Pi path has to be
- * re-anchored before it can be used.
+ * <p>The settings file records the paths as they are on the Pi, for example
+ * {@code /home/whalepi/PAMRecordings}. Reading the ext4 partition directly, those are
+ * literally correct; under a mounted folder they have to be re-anchored, which
+ * {@link LocalCardSource#find} handles. Either way this class asks the source for a
+ * path and gets back a {@link CardFile} or nothing.
  */
 public final class CardScanner {
 
-    /** Directory names never worth descending into when hunting for the settings file. */
-    private static final Set<String> SKIP_DIRS = Set.of(
-            "PAMRecordings", "PAMBinary", "proc", "sys", "dev", "run", "tmp",
-            "usr", "lib", "lib32", "lib64", "bin", "sbin", "snap",
-            "System", "Windows", "Program Files", "Program Files (x86)",
-            "$RECYCLE.BIN", ".Trashes", ".Spotlight-V100", ".fseventsd", "node_modules");
+    /** Where the settings file sits on a standard WhalePi image. */
+    private static final List<String> LIKELY_SETTINGS_PATHS = List.of(
+            "/home/whalepi/pamguard_pizero/" + SettingsReader.SETTINGS_FILE_NAME,
+            "/home/pi/pamguard_pizero/" + SettingsReader.SETTINGS_FILE_NAME,
+            "/pamguard_pizero/" + SettingsReader.SETTINGS_FILE_NAME,
+            "/" + SettingsReader.SETTINGS_FILE_NAME);
 
-    private static final int MAX_SEARCH_DEPTH = 8;
+    /** Folders never worth descending into when hunting for the settings file. */
+    private static final List<String> SKIP_DIRS = List.of(
+            "PAMRecordings", "PAMBinary", "proc", "sys", "dev", "run", "tmp",
+            "usr", "lib", "lib32", "lib64", "bin", "sbin", "snap", "var", "boot",
+            "System", "Windows", "Program Files", "Program Files (x86)",
+            "$RECYCLE.BIN", "lost+found", "node_modules");
+
+    private static final int MAX_SEARCH_DEPTH = 6;
 
     private CardScanner() { }
 
@@ -42,385 +44,222 @@ public final class CardScanner {
     }
 
     /**
-     * Scans {@code root} for a WhalePi deployment.
+     * Scans an opened card.
      *
-     * @throws IOException if no settings file could be found, or it could not be read
+     * @throws IOException if it holds no WhalePi deployment
      */
-    public static CardContents scan(Path root, Progress progress) throws IOException {
+    public static CardContents scan(CardSource source, Progress progress) throws IOException {
         note(progress, "Looking for " + SettingsReader.SETTINGS_FILE_NAME + "…");
-        Path settingsFile = findSettingsFile(root, progress);
+        CardFile settingsFile = findSettingsFile(source, progress);
         if (settingsFile == null) {
-            throw new IOException(noSettingsMessage(root));
+            throw new IOException(noSettingsMessage(source));
         }
 
         note(progress, "Reading settings…");
-        WhalePiSettings settings = SettingsReader.read(settingsFile);
+        WhalePiSettings settings = readSettings(settingsFile);
 
-        Path piFsRoot = deducePiFilesystemRoot(root, settingsFile, settings);
-
-        CardContents contents = new CardContents(root, settings);
+        CardContents contents = new CardContents(source, settings);
         DataNode tree = DataNode.group("WhalePi card", DataNode.Kind.FOLDER);
 
-        addRecordings(tree, root, piFsRoot, settings, progress);
-        addDatabase(tree, root, piFsRoot, settings, progress);
-        addConfig(tree, root, piFsRoot, settings, progress);
-        addBinaries(tree, root, piFsRoot, settings, progress);
+        addFolderGroup(tree, source, settings.getRecordingFolder(), "Sound recordings",
+                DataNode.Kind.RECORDINGS, progress);
+        addSingleFile(tree, source, settings.getDatabase(), "Database", DataNode.Kind.DATABASE);
+        addConfig(tree, source, settings, settingsFile);
+        addBinaries(tree, source, settings, progress);
 
         tree.rollUpCounts();
         contents.setRoot(tree);
         return contents;
     }
 
-    /**
-     * Explains a failed scan. Reading the Pi's little FAT boot partition is the
-     * overwhelmingly common mistake, because on macOS and Windows it is the only
-     * part of the card that mounts – so name it rather than saying "not found".
-     */
-    private static String noSettingsMessage(Path root) {
-        if (looksLikeBootPartition(root)) {
-            return "This is the WhalePi's boot partition, which holds the Raspberry Pi's "
-                    + "start-up files rather than any recordings.\n\n"
-                    + "The recordings, database and binary files live on the card's other "
-                    + "partition, which uses the Linux ext4 filesystem. Windows and macOS cannot "
-                    + "read that on their own — install an ext4 driver, then read the card again.";
+    private static WhalePiSettings readSettings(CardFile file) throws IOException {
+        String json;
+        try (InputStream in = file.open()) {
+            json = new String(in.readAllBytes(), StandardCharsets.UTF_8);
         }
-        return "No " + SettingsReader.SETTINGS_FILE_NAME + " found on " + root + ".\n\n"
-                + "This does not look like a WhalePi card. Choose the drive holding the card's "
-                + "Linux partition and try again.";
-    }
-
-    /** A Raspberry Pi boot partition always carries these two files. */
-    private static boolean looksLikeBootPartition(Path root) {
-        return Files.isRegularFile(root.resolve("config.txt"))
-                && Files.isRegularFile(root.resolve("cmdline.txt"));
+        WhalePiSettings settings = SettingsReader.parse(json, file.path());
+        settings.setSettingsFileHandle(file);
+        return settings;
     }
 
     // ------------------------------------------------------------------ groups
 
-    private static void addRecordings(DataNode tree, Path root, Path piFsRoot,
-                                      WhalePiSettings settings, Progress progress) {
-        DataNode group = DataNode.group("Sound recordings", DataNode.Kind.RECORDINGS);
+    /** A folder of dated sub-folders: recordings, or binaries. */
+    private static void addFolderGroup(DataNode tree, CardSource source, String configuredPath,
+                                       String title, DataNode.Kind kind, Progress progress)
+            throws IOException {
+        DataNode group = DataNode.group(title, kind);
         tree.addChild(group);
 
-        Path folder = resolve(root, piFsRoot, settings.getRecordingFolder(), true);
-        if (folder == null) {
-            group.setNote("not found on card");
+        CardFile folder = configuredPath.isBlank() ? null : source.find(configuredPath);
+        if (folder == null || !folder.isDirectory()) {
+            group.setNote(configuredPath.isBlank() ? "not configured" : "not found on card");
             return;
         }
-        note(progress, "Measuring recordings…");
-        // Day folders (yyyymmdd) first, then any loose files sitting at the top level.
-        List<Path> dayFolders = new ArrayList<>();
-        List<Path> looseFiles = new ArrayList<>();
-        try (var stream = Files.list(folder)) {
-            stream.forEach(p -> {
-                if (Files.isDirectory(p)) dayFolders.add(p);
-                else if (!FolderStats.isHidden(p)) looseFiles.add(p);
-            });
+        note(progress, "Measuring " + folder.name() + "…");
+        fillGroup(group, folder, progress);
+    }
+
+    private static void fillGroup(DataNode group, CardFile folder, Progress progress)
+            throws IOException {
+        List<CardFile> children;
+        try {
+            children = folder.list();
         } catch (IOException e) {
             group.setNote("could not be read");
             return;
         }
-        dayFolders.sort(Comparator.comparing(p -> p.getFileName().toString()));
-        looseFiles.sort(Comparator.comparing(p -> p.getFileName().toString()));
+        List<CardFile> folders = new ArrayList<>();
+        List<CardFile> files = new ArrayList<>();
+        for (CardFile child : children) {
+            if (child.isDirectory()) folders.add(child);
+            else if (child.isRegularFile() && !child.isNoise()) files.add(child);
+        }
+        folders.sort(Comparator.comparing(CardFile::name));
+        files.sort(Comparator.comparing(CardFile::name));
 
-        String base = folder.getFileName().toString();
-        for (Path day : dayFolders) {
+        String base = folder.name();
+        for (CardFile child : folders) {
             if (cancelled(progress)) return;
-            note(progress, "Measuring " + day.getFileName() + "…");
-            DataNode node = new DataNode(day.getFileName().toString(), day,
-                    base + "/" + day.getFileName(), DataNode.Kind.FOLDER, true);
-            FolderStats stats = FolderStats.measure(day, null);
-            node.setCounts(stats.fileCount(), stats.totalBytes());
-            group.addChild(node);
+            note(progress, "Measuring " + child.name() + "…");
+            group.addChild(measured(child, base + "/" + child.name(), DataNode.Kind.FOLDER));
         }
-        for (Path file : looseFiles) {
-            DataNode node = new DataNode(file.getFileName().toString(), file,
-                    base + "/" + file.getFileName(), DataNode.Kind.FILE, true);
-            FolderStats stats = FolderStats.measure(file, null);
-            node.setCounts(stats.fileCount(), stats.totalBytes());
-            group.addChild(node);
+        for (CardFile child : files) {
+            group.addChild(measured(child, base + "/" + child.name(), DataNode.Kind.FILE));
         }
-        if (group.getChildren().isEmpty()) {
-            group.setNote("folder is empty");
-        }
+        if (group.getChildren().isEmpty()) group.setNote("folder is empty");
     }
 
-    private static void addDatabase(DataNode tree, Path root, Path piFsRoot,
-                                    WhalePiSettings settings, Progress progress) {
-        DataNode group = DataNode.group("Database", DataNode.Kind.DATABASE);
+    private static DataNode measured(CardFile file, String destination, DataNode.Kind kind) {
+        DataNode node = new DataNode(file.name(), file, destination, kind, true);
+        FolderStats stats = FolderStats.measure(file);
+        node.setCounts(stats.fileCount(), stats.totalBytes());
+        return node;
+    }
+
+    private static void addSingleFile(DataNode tree, CardSource source, String configuredPath,
+                                      String title, DataNode.Kind kind) throws IOException {
+        DataNode group = DataNode.group(title, kind);
         tree.addChild(group);
-        addFile(group, resolve(root, piFsRoot, settings.getDatabase(), false),
-                settings.getDatabase(), DataNode.Kind.DATABASE, "");
+
+        CardFile file = configuredPath.isBlank() ? null : source.find(configuredPath);
+        if (file == null || !file.isRegularFile()) {
+            group.setNote(configuredPath.isBlank() ? "not configured" : "not found on card");
+            return;
+        }
+        group.addChild(measured(file, file.name(), kind));
     }
 
-    private static void addConfig(DataNode tree, Path root, Path piFsRoot,
-                                  WhalePiSettings settings, Progress progress) {
+    private static void addConfig(DataNode tree, CardSource source, WhalePiSettings settings,
+                                  CardFile settingsFile) throws IOException {
         DataNode group = DataNode.group("PAMGuard configuration", DataNode.Kind.CONFIG);
         tree.addChild(group);
-        addFile(group, resolve(root, piFsRoot, settings.getPsfxFile(), false),
-                settings.getPsfxFile(), DataNode.Kind.CONFIG, "");
-        // The settings file itself is small and worth keeping with the data.
-        Path sf = settings.getSettingsFile();
-        if (sf != null && Files.isRegularFile(sf)) {
-            addFile(group, sf, sf.toString(), DataNode.Kind.CONFIG, "");
+
+        CardFile psfx = settings.getPsfxFile().isBlank() ? null
+                : source.find(settings.getPsfxFile());
+        if (psfx != null && psfx.isRegularFile()) {
+            group.addChild(measured(psfx, psfx.name(), DataNode.Kind.CONFIG));
         }
+        // The settings file is tiny and worth keeping alongside the data.
+        group.addChild(measured(settingsFile, settingsFile.name(), DataNode.Kind.CONFIG));
     }
 
-    private static void addBinaries(DataNode tree, Path root, Path piFsRoot,
-                                    WhalePiSettings settings, Progress progress) {
+    private static void addBinaries(DataNode tree, CardSource source, WhalePiSettings settings,
+                                    Progress progress) throws IOException {
+        String configured = settings.getPamBinaryFolder();
+        if (!configured.isBlank()) {
+            addFolderGroup(tree, source, configured, "Binary files", DataNode.Kind.BINARY, progress);
+            return;
+        }
+        // The field is optional, so fall back to the conventional folder name.
         DataNode group = DataNode.group("Binary files", DataNode.Kind.BINARY);
         tree.addChild(group);
 
-        String configured = settings.getPamBinaryFolder();
-        Path folder = resolve(root, piFsRoot, configured, true);
-        if (folder == null && configured.isBlank()) {
-            // The field is optional; fall back to the conventional folder name.
-            folder = findByName(root, "PAMBinary", progress);
+        CardFile folder = null;
+        String recordings = settings.getRecordingFolder();
+        int slash = recordings.lastIndexOf('/');
+        if (slash > 0) {
+            folder = source.find(recordings.substring(0, slash) + "/PAMBinary");
         }
-        if (folder == null) {
-            group.setNote(configured.isBlank() ? "none on this card" : "not found on card");
+        if (folder == null || !folder.isDirectory()) {
+            group.setNote("none on this card");
             return;
         }
         note(progress, "Measuring binary files…");
-        String base = folder.getFileName().toString();
-        List<Path> subFolders = new ArrayList<>();
-        List<Path> looseFiles = new ArrayList<>();
-        try (var stream = Files.list(folder)) {
-            stream.forEach(p -> {
-                if (Files.isDirectory(p)) subFolders.add(p);
-                else if (!FolderStats.isHidden(p)) looseFiles.add(p);
-            });
+        fillGroup(group, folder, progress);
+    }
+
+    // ------------------------------------------------------- finding the settings
+
+    /**
+     * Looks for {@code whalepidog_settings.json}, trying the standard locations before
+     * falling back to a bounded search.
+     */
+    public static CardFile findSettingsFile(CardSource source, Progress progress)
+            throws IOException {
+        for (String path : LIKELY_SETTINGS_PATHS) {
+            CardFile file = source.find(path);
+            if (file != null && file.isRegularFile()) return file;
+        }
+        note(progress, "Searching the card…");
+        return search(source.root(), 0, progress);
+    }
+
+    private static CardFile search(CardFile folder, int depth, Progress progress)
+            throws IOException {
+        if (depth > MAX_SEARCH_DEPTH || cancelled(progress)) return null;
+
+        List<CardFile> children;
+        try {
+            children = folder.list();
         } catch (IOException e) {
-            group.setNote("could not be read");
-            return;
+            return null;
         }
-        subFolders.sort(Comparator.comparing(p -> p.getFileName().toString()));
-        looseFiles.sort(Comparator.comparing(p -> p.getFileName().toString()));
-
-        for (Path sub : subFolders) {
-            if (cancelled(progress)) return;
-            DataNode node = new DataNode(sub.getFileName().toString(), sub,
-                    base + "/" + sub.getFileName(), DataNode.Kind.FOLDER, true);
-            FolderStats stats = FolderStats.measure(sub, null);
-            node.setCounts(stats.fileCount(), stats.totalBytes());
-            group.addChild(node);
-        }
-        for (Path file : looseFiles) {
-            DataNode node = new DataNode(file.getFileName().toString(), file,
-                    base + "/" + file.getFileName(), DataNode.Kind.FILE, true);
-            FolderStats stats = FolderStats.measure(file, null);
-            node.setCounts(stats.fileCount(), stats.totalBytes());
-            group.addChild(node);
-        }
-        if (group.getChildren().isEmpty()) {
-            group.setNote("folder is empty");
-        }
-    }
-
-    private static void addFile(DataNode group, Path file, String configuredPath,
-                                DataNode.Kind kind, String destFolder) {
-        if (file == null || !Files.isRegularFile(file)) {
-            if (group.getNote().isEmpty()) {
-                group.setNote(configuredPath.isBlank() ? "not configured" : "not found on card");
+        for (CardFile child : children) {
+            if (child.isRegularFile()
+                    && child.name().equalsIgnoreCase(SettingsReader.SETTINGS_FILE_NAME)) {
+                return child;
             }
-            return;
         }
-        String name = file.getFileName().toString();
-        String dest = destFolder.isBlank() ? name : destFolder + "/" + name;
-        DataNode node = new DataNode(name, file, dest, kind, true);
-        FolderStats stats = FolderStats.measure(file, null);
-        node.setCounts(stats.fileCount(), stats.totalBytes());
-        group.addChild(node);
-        group.setNote("");
-    }
-
-    // ------------------------------------------------------------- path mapping
-
-    /**
-     * Works out which folder on the card corresponds to {@code /} on the Pi, by
-     * lining the settings file's location up against the Pi path of the .psfx
-     * file that sits beside it.
-     *
-     * @return the card folder standing in for the Pi filesystem root, or null if
-     *         it could not be established
-     */
-    static Path deducePiFilesystemRoot(Path cardRoot, Path settingsFile, WhalePiSettings settings) {
-        Path cardCfgDir = settingsFile.getParent();
-        if (cardCfgDir == null) return null;
-
-        // The .psfx normally lives in the same folder as the settings file, so its
-        // Pi directory tells us how deep that folder sits below the Pi's root.
-        for (String piPath : List.of(settings.getPsfxFile(), settings.getDatabase())) {
-            if (piPath == null || piPath.isBlank()) continue;
-            Path piDir = Paths.get(piPath).getParent();
-            if (piDir == null) continue;
-
-            Path candidate = stripTail(cardCfgDir, piDir);
-            if (candidate != null) return candidate;
-        }
-        // Nothing matched – assume the selected folder is itself the Pi root.
-        return cardRoot;
-    }
-
-    /**
-     * If {@code cardDir} ends with the same name sequence as {@code piDir}, returns
-     * {@code cardDir} with that many trailing segments removed; otherwise null.
-     */
-    private static Path stripTail(Path cardDir, Path piDir) {
-        int piCount = piDir.getNameCount();
-        int cardCount = cardDir.getNameCount();
-        // Match as many trailing segments as both paths have, longest first.
-        for (int len = Math.min(piCount, cardCount); len >= 1; len--) {
-            boolean match = true;
-            for (int i = 1; i <= len; i++) {
-                String a = cardDir.getName(cardCount - i).toString();
-                String b = piDir.getName(piCount - i).toString();
-                if (!a.equalsIgnoreCase(b)) { match = false; break; }
-            }
-            if (match && len == piCount) {
-                Path result = cardDir;
-                for (int i = 0; i < len; i++) {
-                    result = result.getParent();
-                    if (result == null) return null;
-                }
-                return result;
-            }
+        for (CardFile child : children) {
+            if (!child.isDirectory() || shouldSkip(child.name())) continue;
+            note(progress, "Searching " + child.name() + "…");
+            CardFile found = search(child, depth + 1, progress);
+            if (found != null) return found;
         }
         return null;
     }
 
-    /**
-     * Turns a Pi path from the settings file into a real path on the card.
-     *
-     * <p>Tries, in order: the deduced Pi root; the selected folder with the Pi path
-     * appended; progressively shorter tails of the Pi path; and finally a bounded
-     * search for a matching name.
-     *
-     * @return an existing path, or null if the item is not on this card
-     */
-    public static Path resolve(Path cardRoot, Path piFsRoot, String piPath, boolean wantDirectory) {
-        if (piPath == null || piPath.isBlank()) return null;
-
-        Path pi = Paths.get(piPath);
-        List<Path> candidates = new ArrayList<>();
-
-        // Already a real local path (e.g. the user picked a folder copied off the card).
-        candidates.add(pi);
-
-        Path relative = pi.isAbsolute() ? pi.getRoot().relativize(pi) : pi;
-        if (piFsRoot != null) candidates.add(piFsRoot.resolve(relative.toString()));
-        candidates.add(cardRoot.resolve(relative.toString()));
-
-        // /home/whalepi/PAMRecordings -> whalepi/PAMRecordings -> PAMRecordings
-        for (int i = 1; i < relative.getNameCount(); i++) {
-            candidates.add(cardRoot.resolve(relative.subpath(i, relative.getNameCount()).toString()));
-            if (piFsRoot != null) {
-                candidates.add(piFsRoot.resolve(relative.subpath(i, relative.getNameCount()).toString()));
-            }
-        }
-
-        for (Path c : candidates) {
-            if (matches(c, wantDirectory)) return c;
-        }
-        return findByName(cardRoot, pi.getFileName().toString(), null, wantDirectory);
-    }
-
-    private static boolean matches(Path p, boolean wantDirectory) {
-        try {
-            return wantDirectory ? Files.isDirectory(p) : Files.isRegularFile(p);
-        } catch (SecurityException e) {
-            return false;
-        }
-    }
-
-    private static Path findByName(Path root, String name, Progress progress) {
-        return findByName(root, name, progress, true);
-    }
-
-    /** Bounded breadth-limited hunt for a file or folder called {@code name}. */
-    private static Path findByName(Path root, String name, Progress progress, boolean wantDirectory) {
-        if (name == null || name.isBlank()) return null;
-        final Path[] found = { null };
-        try {
-            Files.walkFileTree(root, Set.of(), MAX_SEARCH_DEPTH, new SimpleFileVisitor<>() {
-                @Override
-                public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
-                    if (cancelled(progress)) return FileVisitResult.TERMINATE;
-                    String dirName = dir.getFileName() == null ? "" : dir.getFileName().toString();
-                    if (!dir.equals(root) && shouldSkip(dirName) && !dirName.equalsIgnoreCase(name)) {
-                        return FileVisitResult.SKIP_SUBTREE;
-                    }
-                    if (wantDirectory && dirName.equalsIgnoreCase(name)) {
-                        found[0] = dir;
-                        return FileVisitResult.TERMINATE;
-                    }
-                    return FileVisitResult.CONTINUE;
-                }
-
-                @Override
-                public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
-                    if (!wantDirectory && file.getFileName().toString().equalsIgnoreCase(name)) {
-                        found[0] = file;
-                        return FileVisitResult.TERMINATE;
-                    }
-                    return FileVisitResult.CONTINUE;
-                }
-
-                @Override
-                public FileVisitResult visitFileFailed(Path file, IOException exc) {
-                    return FileVisitResult.CONTINUE;
-                }
-            });
-        } catch (IOException ignored) {
-            // fall through – treated as "not found"
-        }
-        return found[0];
-    }
-
-    /**
-     * Finds {@code whalepidog_settings.json} under {@code root}, preferring the
-     * shallowest match so a stray copy deep in the tree cannot win.
-     */
-    public static Path findSettingsFile(Path root, Progress progress) {
-        List<Path> matches = new ArrayList<>();
-        try {
-            Files.walkFileTree(root, Set.of(), MAX_SEARCH_DEPTH, new SimpleFileVisitor<>() {
-                @Override
-                public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
-                    if (cancelled(progress)) return FileVisitResult.TERMINATE;
-                    String name = dir.getFileName() == null ? "" : dir.getFileName().toString();
-                    if (!dir.equals(root) && shouldSkip(name)) return FileVisitResult.SKIP_SUBTREE;
-                    note(progress, "Searching " + dir.getFileName() + "…");
-                    return FileVisitResult.CONTINUE;
-                }
-
-                @Override
-                public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
-                    if (file.getFileName().toString()
-                            .equalsIgnoreCase(SettingsReader.SETTINGS_FILE_NAME)) {
-                        matches.add(file);
-                    }
-                    return FileVisitResult.CONTINUE;
-                }
-
-                @Override
-                public FileVisitResult visitFileFailed(Path file, IOException exc) {
-                    return FileVisitResult.CONTINUE;
-                }
-            });
-        } catch (IOException ignored) {
-            // partial results are fine
-        }
-        return matches.stream().min(Comparator.comparingInt(Path::getNameCount)).orElse(null);
-    }
-
-    private static boolean shouldSkip(String dirName) {
-        if (dirName.startsWith(".")) return true;
+    private static boolean shouldSkip(String name) {
+        if (name.startsWith(".")) return true;
         for (String skip : SKIP_DIRS) {
-            if (skip.equalsIgnoreCase(dirName)) return true;
+            if (skip.equalsIgnoreCase(name)) return true;
         }
-        // Day folders full of recordings are never worth searching.
-        return dirName.length() == 8 && dirName.chars().allMatch(Character::isDigit);
+        // A dated folder full of recordings is never worth searching.
+        return name.length() == 8 && name.chars().allMatch(Character::isDigit);
+    }
+
+    /**
+     * Explains a failed scan. Reading the Pi's little FAT boot partition is the
+     * commonest mistake, because on macOS and Windows it is the only part of the card
+     * that mounts — so name it rather than saying "not found".
+     */
+    private static String noSettingsMessage(CardSource source) throws IOException {
+        if (looksLikeBootPartition(source)) {
+            return "This is the WhalePi's boot partition, which holds the Raspberry Pi's "
+                    + "start-up files rather than any recordings.\n\n"
+                    + "The recordings, database and binary files are on the card's other "
+                    + "partition. Go back to the card list and choose the WhalePi data "
+                    + "partition instead — WhalePi Host can read it directly.";
+        }
+        return "No " + SettingsReader.SETTINGS_FILE_NAME + " found on " + source.description()
+                + ".\n\nThis does not look like a WhalePi card.";
+    }
+
+    /** A Raspberry Pi boot partition always carries these two files. */
+    private static boolean looksLikeBootPartition(CardSource source) throws IOException {
+        CardFile root = source.root();
+        return root.child("config.txt") != null && root.child("cmdline.txt") != null;
     }
 
     private static void note(Progress progress, String text) {

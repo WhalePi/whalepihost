@@ -31,6 +31,8 @@ import javafx.scene.control.TreeTableCell;
 import javafx.scene.control.TreeTableColumn;
 import javafx.scene.control.TreeTableView;
 import javafx.scene.image.Image;
+import javafx.scene.input.Clipboard;
+import javafx.scene.input.ClipboardContent;
 import javafx.scene.image.ImageView;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
@@ -58,6 +60,7 @@ public class MainView extends BorderPane {
 
     private final ComboBox<Volume> volumeBox = new ComboBox<>();
     private final Label volumeDetail = new Label();
+    private final Button fixButton = new Button("How to fix…");
     private final Button scanButton = new Button("Read card");
 
     private final Label serialBadge = new Label("NO CARD");
@@ -158,9 +161,19 @@ public class MainView extends BorderPane {
 
         volumeDetail.getStyleClass().add("panel-hint");
         volumeDetail.setWrapText(true);
-        volumeDetail.setMinHeight(32);
+        volumeDetail.setMaxWidth(Double.MAX_VALUE);
+        HBox.setHgrow(volumeDetail, Priority.ALWAYS);
 
-        return panel(1, "SD card", Icons.SD_CARD, new VBox(8, row, volumeDetail));
+        fixButton.getStyleClass().add("button-quiet");
+        fixButton.setVisible(false);
+        fixButton.setManaged(false);
+        fixButton.setOnAction(e -> showRemedy(volumeBox.getValue()));
+
+        HBox detailRow = new HBox(10, volumeDetail, fixButton);
+        detailRow.setAlignment(Pos.CENTER_LEFT);
+        detailRow.setMinHeight(30);
+
+        return panel(1, "SD card", Icons.SD_CARD, new VBox(8, row, detailRow));
     }
 
     /**
@@ -168,16 +181,56 @@ public class MainView extends BorderPane {
      * open – the WhalePi's ext4 data partition on a machine with no ext4 driver.
      */
     private void showVolumeDetail(Volume volume) {
+        volumeDetail.getStyleClass().remove("hint-warning");
+        boolean offerFix = volume != null && volume.hasRemedy();
+        fixButton.setVisible(offerFix);
+        fixButton.setManaged(offerFix);
+
         if (volume == null) {
             volumeDetail.setText("");
-            volumeDetail.getStyleClass().remove("hint-warning");
             scanButton.setDisable(true);
             return;
         }
         volumeDetail.setText(volume.detail());
-        volumeDetail.getStyleClass().remove("hint-warning");
         if (!volume.isReadable()) volumeDetail.getStyleClass().add("hint-warning");
         scanButton.setDisable(!volume.isReadable() || isBusy());
+    }
+
+    /**
+     * Shows the steps for a card that cannot be opened yet, with the command in a
+     * selectable box and a button that copies it — retyping a sudo line by eye from a
+     * dialog is exactly how people end up with the wrong command.
+     */
+    private void showRemedy(Volume volume) {
+        if (volume == null || !volume.hasRemedy()) return;
+
+        TextArea text = new TextArea(volume.remedy());
+        text.setEditable(false);
+        text.setWrapText(true);
+        text.setPrefRowCount(11);
+        text.setPrefColumnCount(60);
+
+        Alert alert = styled(new Alert(Alert.AlertType.INFORMATION));
+        alert.setTitle("WhalePi Host");
+        alert.setHeaderText(volume.label());
+        alert.getDialogPane().setContent(text);
+
+        ButtonType copy = new ButtonType("Copy command");
+        alert.getButtonTypes().setAll(copy, ButtonType.CLOSE);
+        alert.showAndWait().filter(b -> b == copy).ifPresent(b -> copyCommand(volume.remedy()));
+    }
+
+    /** Puts the indented command line from a remedy on the clipboard. */
+    private void copyCommand(String remedy) {
+        String command = remedy.lines()
+                .map(String::strip)
+                .filter(line -> line.startsWith("sudo "))
+                .findFirst()
+                .orElse(remedy);
+        ClipboardContent content = new ClipboardContent();
+        content.putString(command);
+        Clipboard.getSystemClipboard().setContent(content);
+        status("Command copied to the clipboard.", "status-ok");
     }
 
     /** Greys out drives that cannot be opened, so the list explains itself. */
@@ -336,20 +389,20 @@ public class MainView extends BorderPane {
 
     private void startScan() {
         Volume volume = volumeBox.getValue();
-        if (volume != null && !volume.isReadable()) {
-            showError("This drive cannot be opened", volume.detail());
-            return;
-        }
-        Path source = currentSource();
-        if (source == null || !Files.isDirectory(source)) {
+        if (volume == null) {
             status("Choose a card to read first.", "status-error");
             return;
         }
+        if (!volume.isReadable()) {
+            showError("This card cannot be opened", volume.detail());
+            return;
+        }
+        closeCard();
 
         setBusy(true, "Reading card…");
         setCardLoaded(false);
 
-        ScanJob task = new ScanJob(source);
+        ScanJob task = new ScanJob(volume);
         task.messageProperty().addListener((obs, old, message) -> status(message, "status-busy"));
         task.setOnSucceeded(e -> {
             setBusy(false, null);
@@ -365,6 +418,26 @@ public class MainView extends BorderPane {
         runTask(task);
     }
 
+    /** Releases the card when the window closes. */
+    public void dispose() {
+        if (runningTask != null) runningTask.cancel();
+        closeCard();
+    }
+
+    /**
+     * Releases the previously read card. A raw ext4 source holds the device open, so
+     * it has to be closed before another card is read or the window shuts.
+     */
+    private void closeCard() {
+        if (contents == null) return;
+        try {
+            contents.getSource().close();
+        } catch (IOException ignored) {
+            // nothing useful to do about a card we are finished with
+        }
+        contents = null;
+    }
+
     private void showContents(CardContents loaded) {
         this.contents = loaded;
 
@@ -373,13 +446,15 @@ public class MainView extends BorderPane {
 
         TreeItem<DataNode> root = buildTreeItem(loaded.getRoot(), true);
         tree.setRoot(root);
+        tree.scrollTo(0); // a freshly read card should show its first group, not wherever
+                          // the previous card happened to be scrolled to
         attachSelectionListeners(loaded.getRoot());
 
         FolderStats totals = new FolderStats(loaded.getRoot().getFileCount(),
                 loaded.getRoot().getTotalBytes());
         String summary = "On card: " + totals.fileCount() + " files, "
                 + CardScanner.formatBytes(totals.totalBytes())
-                + "   •   settings read from " + loaded.getSettings().getSettingsFile();
+                + "   •   settings read from " + loaded.getSettings().getSettingsPath();
         cardSummary.setText(summary);
         cardSummary.setTooltip(new Tooltip(summary));
 
@@ -388,6 +463,11 @@ public class MainView extends BorderPane {
         updateDestPreview();
         status("Card " + loaded.getSettings().getDisplaySerial() + " read. "
                 + "Choose what to download.", "status-ok");
+
+        String warning = loaded.getSource().warning();
+        if (!warning.isEmpty()) {
+            showWarning("Card was not shut down cleanly", warning);
+        }
     }
 
     /**
@@ -541,6 +621,14 @@ public class MainView extends BorderPane {
         alert.showAndWait();
     }
 
+    private void showWarning(String header, String message) {
+        Alert alert = styled(new Alert(Alert.AlertType.WARNING));
+        alert.setTitle("WhalePi Host");
+        alert.setHeaderText(header);
+        alert.setContentText(message);
+        alert.showAndWait();
+    }
+
     private void showError(String header, String message) {
         Alert alert = styled(new Alert(Alert.AlertType.ERROR));
         alert.setTitle("WhalePi Host");
@@ -582,8 +670,8 @@ public class MainView extends BorderPane {
     }
 
     private void setBusy(boolean busy, String message) {
-        Volume volume = volumeBox.getValue();
-        scanButton.setDisable(busy || volume == null || !volume.isReadable());
+        Volume current = volumeBox.getValue();
+        scanButton.setDisable(busy || current == null || !current.isReadable());
         volumeBox.setDisable(busy || volumeBox.getItems().isEmpty());
         destField.setDisable(busy);
         selectAllButton.setDisable(busy || contents == null);
@@ -605,7 +693,7 @@ public class MainView extends BorderPane {
         downloadButton.setDisable(!loaded);
         if (!loaded) {
             tree.setRoot(null);
-            contents = null;
+            closeCard();
             setSelectionText("nothing", false);
             serialBadge.setText("NO CARD");
             if (!serialBadge.getStyleClass().contains("serial-badge-idle")) {
@@ -623,11 +711,6 @@ public class MainView extends BorderPane {
         };
         if (Platform.isFxApplicationThread()) update.run();
         else Platform.runLater(update);
-    }
-
-    private Path currentSource() {
-        Volume volume = volumeBox.getValue();
-        return volume == null ? null : volume.path();
     }
 
     private Path destinationParent() {
