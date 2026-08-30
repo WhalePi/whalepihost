@@ -74,6 +74,21 @@ Run it during development:
 mvn clean javafx:run
 ```
 
+### Running from an IDE
+
+Run **`whalepihost.Launcher`** — it is the only class with a `main` method, for a reason.
+JavaFX is on the class path rather than the module path, and the JVM refuses to start a main
+class that extends `Application` under those conditions:
+
+```
+Error: JavaFX runtime components are missing, and are required to run this application
+```
+
+`Launcher` does not extend `Application`, so it starts normally and hands off to
+`WhalePiHostApp`. This is the standard workaround for the long-standing Eclipse behaviour;
+`WhalePiHostApp` deliberately has no `main` of its own so there is nothing else to launch by
+mistake.
+
 Build a runnable jar and the staged application folder:
 
 ```bash
@@ -106,8 +121,8 @@ right-click → Open, or `xattr -dr com.apple.quarantine "/Applications/WhalePi 
 
 ```
 src/main/java/whalepihost/
-  Launcher.java              entry point used by the installers
-  WhalePiHostApp.java        JavaFX application
+  Launcher.java              the only main method - run this one
+  WhalePiHostApp.java        JavaFX Application, started by Launcher
   model/
     SettingsReader.java      parses whalepidog_settings.json
     WhalePiSettings.java     the values read from it

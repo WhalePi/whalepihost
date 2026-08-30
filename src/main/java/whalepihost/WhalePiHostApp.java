@@ -7,7 +7,11 @@ import javafx.stage.Stage;
 
 import whalepihost.ui.MainView;
 
-/** WhalePi Host – reads a WhalePi SD card and copies its data onto a computer. */
+/**
+ * WhalePi Host – reads a WhalePi SD card and copies its data onto a computer.
+ *
+ * <p>Started from {@link Launcher}, never directly: see the note there.
+ */
 public class WhalePiHostApp extends Application {
 
     @Override
@@ -26,9 +30,5 @@ public class WhalePiHostApp extends Application {
         stage.setMinHeight(640);
         stage.setScene(scene);
         stage.show();
-    }
-
-    public static void main(String[] args) {
-        launch(args);
     }
 }
