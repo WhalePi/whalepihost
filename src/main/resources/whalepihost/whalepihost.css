@@ -1,0 +1,397 @@
+/*
+ * WhalePi Host – dark terminal theme, matching the WhalePi phone app palette.
+ */
+
+.root {
+    -wp-background:    #121218;
+    -wp-surface:       #1E1E26;
+    -wp-surface-light: #2A2A35;
+    -wp-primary:       #5DADE2;
+    -wp-primary-dim:   #3498DB;
+    -wp-green:         #58D68D;
+    -wp-red:           #E74C3C;
+    -wp-yellow:        #F4D03F;
+    -wp-text:          #E8E8E8;
+    -wp-text-dim:      #B0B0B0;
+    -wp-grey:          #6C6C7A;
+
+    -fx-font-family: "Menlo", "Consolas", "DejaVu Sans Mono", monospace;
+    -fx-font-size: 13px;
+    -fx-background-color: -wp-background;
+    -fx-text-fill: -wp-text;
+    -fx-focus-color: -wp-primary;
+    -fx-faint-focus-color: transparent;
+}
+
+.text, .label {
+    -fx-text-fill: -wp-text;
+}
+
+/* ------------------------------------------------------------------ header */
+
+.header {
+    -fx-background-color: -wp-surface;
+    -fx-padding: 12 18 12 18;
+    -fx-border-color: transparent transparent -wp-surface-light transparent;
+    -fx-border-width: 0 0 1 0;
+}
+
+.header-title {
+    -fx-font-size: 20px;
+    -fx-font-weight: bold;
+    -fx-text-fill: -wp-text;
+}
+
+.header-subtitle {
+    -fx-font-size: 11px;
+    -fx-text-fill: -wp-text-dim;
+}
+
+.serial-badge {
+    -fx-background-color: -wp-yellow;
+    -fx-background-radius: 4;
+    -fx-padding: 3 8 3 8;
+    -fx-font-size: 11px;
+    -fx-font-weight: bold;
+    -fx-text-fill: #121218;
+}
+
+.serial-badge-idle {
+    -fx-background-color: -wp-surface-light;
+    -fx-text-fill: -wp-text-dim;
+}
+
+/* ------------------------------------------------------------------- panels */
+
+.panel {
+    -fx-background-color: -wp-surface;
+    -fx-border-color: -wp-primary-dim;
+    -fx-border-width: 1;
+    -fx-border-radius: 6;
+    -fx-background-radius: 6;
+}
+
+.panel-header {
+    -fx-padding: 8 12 8 12;
+    -fx-border-color: transparent transparent -wp-primary-dim transparent;
+    -fx-border-width: 0 0 1 0;
+}
+
+.panel-title {
+    -fx-text-fill: -wp-primary;
+    -fx-font-size: 14px;
+    -fx-font-weight: bold;
+}
+
+.panel-hint {
+    -fx-text-fill: -wp-text-dim;
+    -fx-font-size: 11px;
+}
+
+.panel-body {
+    -fx-padding: 12;
+}
+
+.step-number {
+    -fx-background-color: -wp-primary;
+    -fx-background-radius: 20;
+    -fx-min-width: 22;
+    -fx-min-height: 22;
+    -fx-alignment: center;
+    -fx-text-fill: #121218;
+    -fx-font-weight: bold;
+    -fx-font-size: 12px;
+}
+
+/* ------------------------------------------------------------------ controls */
+
+.button {
+    -fx-background-color: -wp-surface-light;
+    -fx-text-fill: -wp-primary;
+    -fx-border-color: -wp-primary;
+    -fx-border-width: 1;
+    -fx-border-radius: 5;
+    -fx-background-radius: 5;
+    -fx-padding: 6 14 6 14;
+    -fx-cursor: hand;
+}
+
+.button:hover {
+    -fx-background-color: derive(#2A2A35, 20%);
+}
+
+.button:disabled {
+    -fx-opacity: 0.45;
+    -fx-cursor: default;
+}
+
+.button-quiet {
+    -fx-border-color: -wp-grey;
+    -fx-text-fill: -wp-text-dim;
+    -fx-padding: 4 10 4 10;
+    -fx-font-size: 11px;
+}
+
+.button-primary {
+    -fx-background-color: -wp-primary;
+    -fx-text-fill: #121218;
+    -fx-border-color: -wp-primary;
+    -fx-font-weight: bold;
+    -fx-padding: 9 22 9 22;
+    -fx-font-size: 14px;
+}
+
+.button-primary:hover {
+    -fx-background-color: derive(#5DADE2, 15%);
+}
+
+.button-danger {
+    -fx-text-fill: -wp-red;
+    -fx-border-color: -wp-red;
+}
+
+.text-field {
+    -fx-background-color: -wp-background;
+    -fx-text-fill: -wp-text;
+    -fx-prompt-text-fill: -wp-grey;
+    -fx-border-color: -wp-grey;
+    -fx-border-width: 1;
+    -fx-border-radius: 5;
+    -fx-background-radius: 5;
+    -fx-padding: 6 10 6 10;
+}
+
+.text-field:focused {
+    -fx-border-color: -wp-primary;
+}
+
+.combo-box {
+    -fx-background-color: -wp-background;
+    -fx-border-color: -wp-grey;
+    -fx-border-width: 1;
+    -fx-border-radius: 5;
+    -fx-background-radius: 5;
+    -fx-padding: 2 4 2 4;
+}
+
+.combo-box:focused {
+    -fx-border-color: -wp-primary;
+}
+
+.combo-box .list-cell {
+    -fx-text-fill: -wp-text;
+    -fx-background-color: transparent;
+    -fx-padding: 4 6 4 6;
+}
+
+.combo-box-popup .list-view {
+    -fx-background-color: -wp-surface;
+    -fx-border-color: -wp-grey;
+}
+
+.combo-box-popup .list-cell:filled:hover,
+.combo-box-popup .list-cell:filled:selected {
+    -fx-background-color: -wp-primary-dim;
+    -fx-text-fill: #121218;
+}
+
+.combo-box .arrow {
+    -fx-background-color: -wp-primary;
+}
+
+/* --------------------------------------------------------------- tree table */
+
+.tree-table-view {
+    -fx-background-color: -wp-background;
+    -fx-border-color: -wp-surface-light;
+    -fx-border-width: 1;
+    -fx-border-radius: 5;
+    -fx-background-radius: 5;
+}
+
+.tree-table-view .column-header-background {
+    -fx-background-color: -wp-surface;
+}
+
+.tree-table-view .column-header,
+.tree-table-view .filler {
+    -fx-background-color: transparent;
+    -fx-border-color: transparent transparent -wp-surface-light transparent;
+    -fx-size: 30;
+}
+
+.tree-table-view .column-header .label {
+    -fx-text-fill: -wp-primary;
+    -fx-font-size: 11px;
+    -fx-font-weight: bold;
+    -fx-alignment: center-left;
+}
+
+.tree-table-view .tree-table-row-cell {
+    -fx-background-color: -wp-background;
+    -fx-border-color: transparent;
+    -fx-table-cell-border-color: transparent;
+}
+
+.tree-table-view .tree-table-row-cell:odd {
+    -fx-background-color: #16161C;
+}
+
+.tree-table-view .tree-table-row-cell:selected {
+    -fx-background-color: -wp-surface-light;
+}
+
+.tree-table-view .tree-table-cell {
+    -fx-text-fill: -wp-text;
+    -fx-border-color: transparent;
+    -fx-padding: 4 8 4 8;
+}
+
+.tree-table-view .tree-disclosure-node .arrow {
+    -fx-background-color: -wp-primary;
+}
+
+.tree-table-view:focused .tree-table-row-cell:selected {
+    -fx-background-color: -wp-surface-light;
+}
+
+.cell-dim {
+    -fx-text-fill: -wp-text-dim;
+}
+
+.cell-group {
+    -fx-font-weight: bold;
+    -fx-text-fill: -wp-text;
+}
+
+.cell-note {
+    -fx-text-fill: -wp-grey;
+    -fx-font-size: 11px;
+}
+
+.cell-number {
+    -fx-alignment: center-right;
+}
+
+/* ------------------------------------------------------------------ checkbox */
+
+.check-box {
+    -fx-text-fill: -wp-text;
+}
+
+.check-box .box {
+    -fx-background-color: -wp-background;
+    -fx-border-color: -wp-grey;
+    -fx-border-width: 1;
+    -fx-border-radius: 3;
+    -fx-background-radius: 3;
+    -fx-padding: 3;
+}
+
+.check-box:selected .box,
+.check-box:indeterminate .box {
+    -fx-background-color: -wp-primary;
+    -fx-border-color: -wp-primary;
+}
+
+.check-box:selected .mark,
+.check-box:indeterminate .mark {
+    -fx-background-color: #121218;
+}
+
+/* ------------------------------------------------------------ progress + bar */
+
+.progress-bar > .track {
+    -fx-background-color: -wp-background;
+    -fx-border-color: -wp-grey;
+    -fx-border-radius: 3;
+    -fx-background-radius: 3;
+}
+
+.progress-bar > .bar {
+    -fx-background-color: -wp-primary;
+    -fx-background-insets: 1;
+    -fx-background-radius: 2;
+    -fx-padding: 5;
+}
+
+.progress-indicator .percentage {
+    -fx-fill: -wp-text-dim;
+}
+
+.status-bar {
+    -fx-background-color: -wp-surface;
+    -fx-padding: 8 18 8 18;
+    -fx-border-color: -wp-surface-light transparent transparent transparent;
+    -fx-border-width: 1 0 0 0;
+}
+
+.status-text {
+    -fx-text-fill: -wp-text-dim;
+    -fx-font-size: 12px;
+}
+
+.status-ok    { -fx-text-fill: -wp-green; }
+.status-error { -fx-text-fill: -wp-red; }
+.status-busy  { -fx-text-fill: -wp-primary; }
+
+.summary-value {
+    -fx-text-fill: -wp-green;
+    -fx-font-weight: bold;
+}
+
+.summary-label {
+    -fx-text-fill: -wp-text-dim;
+}
+
+.path-label {
+    -fx-text-fill: -wp-text-dim;
+    -fx-font-size: 11px;
+}
+
+/* --------------------------------------------------------------- scroll bars */
+
+.scroll-bar {
+    -fx-background-color: -wp-background;
+}
+
+.scroll-bar .thumb {
+    -fx-background-color: -wp-surface-light;
+    -fx-background-radius: 4;
+}
+
+.scroll-bar .thumb:hover {
+    -fx-background-color: -wp-grey;
+}
+
+.scroll-bar .increment-button,
+.scroll-bar .decrement-button {
+    -fx-background-color: transparent;
+    -fx-padding: 0;
+}
+
+.scroll-bar .increment-arrow,
+.scroll-bar .decrement-arrow {
+    -fx-shape: null;
+    -fx-padding: 0;
+}
+
+/* -------------------------------------------------------------------- dialog */
+
+.dialog-pane {
+    -fx-background-color: -wp-surface;
+}
+
+.dialog-pane .label,
+.dialog-pane .content.label {
+    -fx-text-fill: -wp-text;
+}
+
+.dialog-pane .header-panel {
+    -fx-background-color: -wp-surface-light;
+}
+
+.dialog-pane .header-panel .label {
+    -fx-text-fill: -wp-primary;
+    -fx-font-weight: bold;
+}
