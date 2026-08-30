@@ -2,8 +2,10 @@ package whalepihost.model;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -52,6 +54,44 @@ public class LocalCardSource implements CardSource {
             if (Files.exists(candidate)) return new LocalCardFile(candidate);
         }
         return null;
+    }
+
+    @Override
+    public boolean canWrite() {
+        return Files.isWritable(root);
+    }
+
+    @Override
+    public String writeBlockedReason() {
+        return canWrite() ? "" : "This drive is mounted read-only, so its files cannot be changed.";
+    }
+
+    /**
+     * Writes through the mounted filesystem, so the file may change length freely.
+     *
+     * <p>The new contents go to a temporary file next to the original and are moved
+     * into place, so a failure part-way through cannot leave a half-written settings
+     * file on the card.
+     */
+    @Override
+    public void write(CardFile file, byte[] content) throws IOException {
+        Path target = Path.of(file.path());
+        Path parent = target.getParent();
+        if (parent == null) throw new IOException("Cannot write to " + target);
+
+        Path temporary = Files.createTempFile(parent, ".whalepihost", ".tmp");
+        try {
+            Files.write(temporary, content);
+            try {
+                Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING,
+                        StandardCopyOption.ATOMIC_MOVE);
+            } catch (AtomicMoveNotSupportedException e) {
+                // FAT32 and some network mounts cannot move atomically.
+                Files.move(temporary, target, StandardCopyOption.REPLACE_EXISTING);
+            }
+        } finally {
+            Files.deleteIfExists(temporary);
+        }
     }
 
     @Override

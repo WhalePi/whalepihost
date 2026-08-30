@@ -24,6 +24,8 @@ import javafx.scene.control.ComboBox;
 import javafx.scene.control.Label;
 import javafx.scene.control.ProgressBar;
 import javafx.scene.control.TextArea;
+import javafx.scene.control.Tab;
+import javafx.scene.control.TabPane;
 import javafx.scene.control.TextField;
 import javafx.scene.control.Tooltip;
 import javafx.scene.control.TreeItem;
@@ -66,6 +68,7 @@ public class MainView extends BorderPane {
     private final Label serialBadge = new Label("NO CARD");
     private final Label cardSummary = new Label("No card read yet.");
     private final TreeTableView<DataNode> tree = new TreeTableView<>();
+    private final TabPane contentTabs = new TabPane();
     private final Label selectionSummary = new Label();
     private final Button selectAllButton = new Button("Select all");
     private final Button selectNoneButton = new Button("Select none");
@@ -73,6 +76,11 @@ public class MainView extends BorderPane {
     private final TextField destField = new TextField();
     private final Label destPreview = new Label();
     private final Button downloadButton = new Button("Download");
+
+    private final SettingsPane settingsPane = new SettingsPane(
+            message -> status(message, "status-ok"),
+            message -> status(message, "status-error"),
+            this::showInfo);
 
     private final Label statusLabel = new Label("Insert a WhalePi SD card, then choose it above.");
     private final ProgressBar progressBar = new ProgressBar(0);
@@ -136,9 +144,18 @@ public class MainView extends BorderPane {
     // -------------------------------------------------------------------- body
 
     private Node buildBody() {
-        VBox body = new VBox(14, buildSourcePanel(), buildContentsPanel(), buildDestinationPanel());
+        Node destination = buildDestinationPanel();
+        VBox body = new VBox(14, buildSourcePanel(), buildContentsPanel(), destination);
         body.setPadding(new Insets(16));
         VBox.setVgrow(body.getChildren().get(1), Priority.ALWAYS);
+
+        // Downloading is a Files-tab activity; while Settings is open the panel would
+        // only be taking room the form needs.
+        contentTabs.getSelectionModel().selectedIndexProperty().addListener((obs, was, is) -> {
+            boolean filesTab = is.intValue() == 0;
+            destination.setVisible(filesTab);
+            destination.setManaged(filesTab);
+        });
         return body;
     }
 
@@ -156,7 +173,15 @@ public class MainView extends BorderPane {
         scanButton.setOnAction(e -> startScan());
         scanButton.setDefaultButton(true);
 
-        HBox row = new HBox(10, new Label("Card:"), volumeBox, refresh, scanButton);
+        // The combo is the only thing that should give when the window narrows;
+        // buttons collapsing to "..." makes the toolbar unusable.
+        Label cardLabel = new Label("Card:");
+        for (Region fixed : List.of(cardLabel, refresh, scanButton)) {
+            fixed.setMinWidth(Region.USE_PREF_SIZE);
+        }
+        volumeBox.setMinWidth(160);
+
+        HBox row = new HBox(10, cardLabel, volumeBox, refresh, scanButton);
         row.setAlignment(Pos.CENTER_LEFT);
 
         volumeDetail.getStyleClass().add("panel-hint");
@@ -273,9 +298,22 @@ public class MainView extends BorderPane {
                 dim("Selected:"), selectionSummary);
         footer.setAlignment(Pos.CENTER_LEFT);
 
-        VBox box = new VBox(10, cardSummary, tree, footer);
-        VBox.setVgrow(box, Priority.ALWAYS);
-        return panel(2, "Contents", Icons.GRAPHIC_EQ, box);
+        VBox files = new VBox(10, cardSummary, tree, footer);
+        VBox.setVgrow(files, Priority.ALWAYS);
+
+        Tab filesTab = new Tab("FILES", files);
+        filesTab.setClosable(false);
+        filesTab.setGraphic(Icons.of(Icons.GRAPHIC_EQ, 13, Palette.PRIMARY));
+
+        Tab settingsTab = new Tab("SETTINGS", settingsPane);
+        settingsTab.setClosable(false);
+        settingsTab.setGraphic(Icons.of(Icons.TUNE, 13, Palette.PRIMARY));
+
+        contentTabs.getTabs().setAll(filesTab, settingsTab);
+        contentTabs.setTabClosingPolicy(TabPane.TabClosingPolicy.UNAVAILABLE);
+        VBox.setVgrow(contentTabs, Priority.ALWAYS);
+
+        return panel(2, "Contents", Icons.GRAPHIC_EQ, contentTabs);
     }
 
     private void buildTreeColumns() {
@@ -464,6 +502,8 @@ public class MainView extends BorderPane {
         status("Card " + loaded.getSettings().getDisplaySerial() + " read. "
                 + "Choose what to download.", "status-ok");
 
+        settingsPane.load(loaded);
+
         String warning = loaded.getSource().warning();
         if (!warning.isEmpty()) {
             showWarning("Card was not shut down cleanly", warning);
@@ -621,6 +661,21 @@ public class MainView extends BorderPane {
         alert.showAndWait();
     }
 
+    /** Shows a long message with room to read it, for the Settings tab. */
+    private void showInfo(String header, String message) {
+        TextArea area = new TextArea(message);
+        area.setEditable(false);
+        area.setWrapText(true);
+        area.setPrefRowCount(Math.min(14, (int) message.lines().count() + 3));
+        area.setPrefColumnCount(58);
+
+        Alert alert = styled(new Alert(Alert.AlertType.INFORMATION));
+        alert.setTitle("WhalePi Host");
+        alert.setHeaderText(header);
+        alert.getDialogPane().setContent(area);
+        alert.showAndWait();
+    }
+
     private void showWarning(String header, String message) {
         Alert alert = styled(new Alert(Alert.AlertType.WARNING));
         alert.setTitle("WhalePi Host");
@@ -677,6 +732,7 @@ public class MainView extends BorderPane {
         selectAllButton.setDisable(busy || contents == null);
         selectNoneButton.setDisable(busy || contents == null);
         tree.setDisable(busy);
+        settingsPane.setDisable(busy || contents == null);
         downloadButton.setDisable(busy);
         progressBar.setVisible(busy);
         if (busy) {
@@ -693,6 +749,7 @@ public class MainView extends BorderPane {
         downloadButton.setDisable(!loaded);
         if (!loaded) {
             tree.setRoot(null);
+            settingsPane.clear();
             closeCard();
             setSelectionText("nothing", false);
             serialBadge.setText("NO CARD");

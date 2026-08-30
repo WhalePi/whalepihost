@@ -277,6 +277,85 @@ public class Ext4FileSystem implements Closeable {
         return extents;
     }
 
+    // ---------------------------------------------------------------- writing
+
+    /**
+     * Opens the filesystem for writing as well as reading.
+     *
+     * <p>Raw devices are owned by root with write permission for nobody else, so on
+     * macOS and Windows this needs the program to be running elevated.
+     */
+    public static Ext4FileSystem openForWriting(Path deviceOrImage) throws IOException {
+        BlockDevice device = new BlockDevice(deviceOrImage, true);
+        try {
+            return new Ext4FileSystem(device);
+        } catch (IOException | RuntimeException e) {
+            device.close();
+            throw e;
+        }
+    }
+
+    public boolean isWritable() {
+        return device.isWritable();
+    }
+
+    /**
+     * Replaces a file's contents with exactly the same number of bytes.
+     *
+     * <p>This is deliberately the only write there is. Because the length does not
+     * change, the file keeps its existing blocks and its inode is untouched: no block
+     * allocation, no bitmap or free-count updates, no directory change, and — since
+     * ext4 checksums metadata but never file data — no checksum to recompute. The
+     * write lands purely in data blocks the file already owns, so a filesystem that
+     * was consistent before stays consistent after.
+     *
+     * <p>Anything that would change the file's length is refused rather than attempted;
+     * growing a file needs allocation and checksummed metadata updates, which is not
+     * worth the risk to a card holding a deployment's only copy of its data.
+     *
+     * @throws Ext4Exception if the length differs, or the file is sparse
+     */
+    public void overwriteInPlace(Ext4Inode inode, byte[] content) throws IOException {
+        if (!isWritable()) {
+            throw new Ext4Exception("This filesystem was opened read-only");
+        }
+        if (!inode.isRegularFile()) {
+            throw new Ext4Exception("Inode " + inode.number() + " is not a regular file");
+        }
+        if (inode.hasInlineData()) {
+            throw new Ext4Exception("Files with inline data cannot be rewritten");
+        }
+        if (content.length != inode.size()) {
+            throw new Ext4Exception("In-place writes must keep the file the same length: "
+                    + "the file is " + inode.size() + " bytes but " + content.length
+                    + " were supplied");
+        }
+
+        long blocks = (content.length + blockSize - 1) / blockSize;
+        // Check every block is really allocated before writing any of them, so a
+        // sparse file cannot be left half-updated.
+        for (long index = 0; index < blocks; index++) {
+            if (physicalBlock(inode, index) == 0) {
+                throw new Ext4Exception("The file has a hole at block " + index
+                        + " and cannot be rewritten in place");
+            }
+        }
+
+        byte[] block = new byte[blockSize];
+        for (long index = 0; index < blocks; index++) {
+            int from = (int) (index * blockSize);
+            int length = Math.min(blockSize, content.length - from);
+
+            if (length < blockSize) {
+                // Keep whatever already follows the file inside its last block.
+                readFileBlock(inode, index, block);
+            }
+            System.arraycopy(content, from, block, 0, length);
+            device.write(physicalBlock(inode, index) * (long) blockSize, block, 0, blockSize);
+        }
+        device.flush();
+    }
+
     // ------------------------------------------------------------ extent mapping
 
     /**

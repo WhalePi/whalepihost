@@ -25,6 +25,32 @@ public interface CardSource extends Closeable {
      */
     CardFile find(String absolutePath) throws IOException;
 
+    /** True if files on this card can be written back. */
+    default boolean canWrite() {
+        return false;
+    }
+
+    /**
+     * Why the card cannot be written to, for the user. "" when it can be.
+     */
+    default String writeBlockedReason() {
+        return "This card is open for reading only.";
+    }
+
+    /**
+     * Longest content an in-place rewrite of {@code file} may produce, or -1 when
+     * there is no limit. An unmounted ext4 card can only rewrite a file at exactly
+     * its current length, so the limit is the file's own size.
+     */
+    default long writeCapacity(CardFile file) {
+        return -1;
+    }
+
+    /** Replaces a file's contents. */
+    default void write(CardFile file, byte[] content) throws IOException {
+        throw new IOException(writeBlockedReason());
+    }
+
     /**
      * A warning about the card worth showing the user, or "" if all is well —
      * for instance an ext4 filesystem that was never cleanly unmounted.

@@ -26,6 +26,9 @@ pick it from the list, and copy off what you want.
    and press Download. The files are copied into a new folder named for the unit and the time,
    for example `WhalePi_1A_20260830_142530/`.
 
+The Contents panel has two tabs: **Files**, the tree above, and **Settings**, a form over the
+unit's `whalepidog_settings.json` — see below.
+
 The unit's serial number (the `identification` field in the Bluetooth settings) is shown in the
 top right of the window and used to name the download folder.
 
@@ -74,6 +77,44 @@ The journal is **not** replayed. A card pulled out of a running Pi may have its 
 writes sitting in the journal; WhalePi Host notices that the filesystem was not cleanly
 unmounted and says so, and everything already written reads correctly. Shut the Pi down
 properly before removing the card and the question does not arise.
+
+## Changing a unit's settings
+
+![The Settings tab](docs/settings.png)
+
+The **Settings** tab presents `whalepidog_settings.json` as a form: serial number, recording
+prefix and file type, the paths, PAMGuard's memory limits, the watchdog's timings, and the
+Bluetooth options. Each control says what it does, values are checked before anything is
+written, and any key WhalePi Host does not recognise is carried through a save untouched — so a
+setting added by a newer WhalePiDog survives editing.
+
+Saving needs the card open for writing, which is a stricter thing than reading it:
+
+| Card | Saving |
+|---|---|
+| Mounted (Linux, or Windows/macOS with a driver) | Ordinary file write. The file may grow or shrink freely. |
+| Unmounted ext4, read directly | Needs the program running as administrator, and the file is rewritten **in place at its current length**. |
+
+### Why in place, and why that is safe
+
+Writing to ext4 in general means allocating blocks, updating bitmaps and free counts, and
+recomputing the metadata checksums a modern ext4 keeps. Getting any of that wrong damages the
+filesystem, and the card usually holds a deployment's only copy of its data.
+
+So the direct writer does exactly one thing: it replaces a file's contents with the **same number
+of bytes**. The file keeps the blocks it already has, so no allocation happens, no bitmap or free
+count changes, the directory is untouched, and the inode is not rewritten. Since ext4 checksums
+metadata but never file data, there is no checksum to recompute either. A filesystem that was
+consistent before the write is consistent after it. Anything that would change a file's length is
+refused rather than attempted.
+
+To keep the length fixed, the JSON is padded with trailing whitespace, which every JSON parser
+ignores. Indented output is tried first and compact output second, which leaves plenty of room —
+the stock settings file is 961 bytes and renders to about 640 compact. If the settings genuinely
+will not fit, the save is refused with an explanation rather than half-done.
+
+Every save is read back off the card and compared field by field before it is reported as
+successful.
 
 ## Where the paths come from
 
@@ -170,7 +211,7 @@ src/main/java/whalepihost/
     FolderStats.java         recursive file count and size
     Volume.java              the card list, including unmounted ext4 partitions
   ext4/
-    Ext4FileSystem.java      the read-only ext2/3/4 reader
+    Ext4FileSystem.java      the ext2/3/4 reader, plus in-place rewrites
     BlockDevice.java         aligned, cached reads over a device or image
     Ext4Inode.java           one inode
     Ext4DirEntry.java        one directory entry
@@ -179,8 +220,13 @@ src/main/java/whalepihost/
   copy/
     ScanJob.java             background scan
     CopyJob.java             background copy, with byte-level progress
+  settings/
+    SettingsSchema.java      the editable parameters, in form order
+    SettingsField.java       one parameter: type, limits, help text
+    SettingsDocument.java    the JSON, edited and rendered back
   ui/
     MainView.java            the window
+    SettingsPane.java        the Settings tab, generated from the schema
     Icons.java, Palette.java the phone app's icons and colours
 src/main/resources/whalepihost/
   whalepihost.css            dark theme matching the phone app

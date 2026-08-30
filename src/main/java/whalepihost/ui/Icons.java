@@ -53,6 +53,19 @@ public final class Icons {
 
     public static final String STOP = "M6 6h12v12H6z";
 
+    public static final String SAVE =
+            "M17 3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V7l-4-4zm-5 16c-1.66 0"
+            + "-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm3-10H5V5h10v4z";
+
+    public static final String BLUETOOTH =
+            "M17.71 7.71L12 2h-1v7.59L6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 11 14.41V22h1l5.71"
+            + "-5.71-4.3-4.29 4.3-4.29zM13 5.83l1.88 1.88L13 9.59V5.83zm1.88 10.46L13 18.17v-3.76"
+            + "l1.88 1.88z";
+
+    public static final String TUNE =
+            "M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v"
+            + "-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z";
+
     private Icons() { }
 
     /** An icon at the given pixel size, in the given colour. */

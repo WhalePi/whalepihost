@@ -289,6 +289,74 @@
     -fx-alignment: center-right;
 }
 
+/* ------------------------------------------------------------------- tabs */
+
+.tab-pane > .tab-header-area > .tab-header-background {
+    -fx-background-color: -wp-surface;
+}
+
+.tab-pane > .tab-header-area {
+    -fx-padding: 0;
+}
+
+.tab-pane > .tab-header-area > .headers-region > .tab {
+    -fx-background-color: transparent;
+    -fx-background-radius: 0;
+    -fx-padding: 6 18 6 18;
+    -fx-border-color: transparent transparent -wp-surface-light transparent;
+    -fx-border-width: 0 0 2 0;
+}
+
+.tab-pane > .tab-header-area > .headers-region > .tab:selected {
+    -fx-border-color: transparent transparent -wp-primary transparent;
+}
+
+.tab-pane > .tab-header-area > .headers-region > .tab .tab-label {
+    -fx-text-fill: -wp-text-dim;
+    -fx-font-size: 12px;
+    -fx-font-weight: bold;
+}
+
+.tab-pane > .tab-header-area > .headers-region > .tab:selected .tab-label {
+    -fx-text-fill: -wp-primary;
+}
+
+.tab-pane > .tab-content-area {
+    -fx-background-color: transparent;
+    -fx-padding: 10 0 0 0;
+}
+
+.tab-pane:focused > .tab-header-area > .headers-region > .tab:selected .focus-indicator {
+    -fx-border-color: transparent;
+}
+
+/* --------------------------------------------------------------- settings form */
+
+.settings-scroll,
+.settings-scroll > .viewport {
+    -fx-background-color: transparent;
+}
+
+.settings-scroll {
+    -fx-border-color: transparent;
+    -fx-padding: 0 4 0 0;
+}
+
+.settings-grid {
+    -fx-padding: 2 0 2 0;
+}
+
+.settings-label {
+    -fx-text-fill: -wp-text;
+    -fx-padding: 5 0 0 0;
+}
+
+.settings-help {
+    -fx-text-fill: -wp-grey;
+    -fx-font-size: 10.5px;
+    -fx-padding: 1 0 5 0;
+}
+
 /* ------------------------------------------------------------------ checkbox */
 
 .check-box {

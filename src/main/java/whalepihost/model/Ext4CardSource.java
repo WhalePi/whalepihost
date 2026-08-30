@@ -25,7 +25,15 @@ public class Ext4CardSource implements CardSource {
 
     public Ext4CardSource(Path device, String label) throws IOException {
         this.label = label;
-        this.fs = Ext4FileSystem.open(device);
+        // Try read-write first so the Settings tab can save. Raw devices are writable
+        // by root alone, so this normally falls back and the card opens read-only.
+        Ext4FileSystem opened;
+        try {
+            opened = Ext4FileSystem.openForWriting(device);
+        } catch (IOException e) {
+            opened = Ext4FileSystem.open(device);
+        }
+        this.fs = opened;
     }
 
     @Override
@@ -47,6 +55,41 @@ public class Ext4CardSource implements CardSource {
         int slash = absolutePath.lastIndexOf('/');
         String name = slash < 0 ? absolutePath : absolutePath.substring(slash + 1);
         return new Ext4CardFile(name, absolutePath, inode);
+    }
+
+    @Override
+    public boolean canWrite() {
+        return fs.isWritable();
+    }
+
+    @Override
+    public String writeBlockedReason() {
+        if (fs.isWritable()) return "";
+        String elevate = System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT)
+                .contains("win")
+                ? "Close WhalePi Host and start it again with \"Run as administrator\"."
+                : "Close WhalePi Host and start it again with administrator rights, for example:\n\n"
+                  + "    sudo \"/Applications/WhalePi Host.app/Contents/MacOS/WhalePi Host\"";
+        return "The card was opened for reading only. Reading a disk directly needs permission "
+                + "to read it; changing one needs permission to write it, which the system "
+                + "grants only to an administrator.\n\n" + elevate;
+    }
+
+    /**
+     * An unmounted card can only have a file rewritten at exactly its current length,
+     * so that is the capacity.
+     */
+    @Override
+    public long writeCapacity(CardFile file) {
+        return file.size();
+    }
+
+    @Override
+    public void write(CardFile file, byte[] content) throws IOException {
+        if (!(file instanceof Ext4CardFile ext4File)) {
+            throw new IOException("That file is not on this card");
+        }
+        fs.overwriteInPlace(ext4File.inode(), content);
     }
 
     @Override
@@ -75,6 +118,8 @@ public class Ext4CardSource implements CardSource {
             this.path = path;
             this.inode = inode;
         }
+
+        Ext4Inode inode() { return inode; }
 
         @Override
         public String name() { return name; }

@@ -32,6 +32,7 @@ public class BlockDevice implements Closeable {
     private final FileChannel channel;
     private final String name;
     private final long size;
+    private final boolean writable;
 
     private final Map<Long, byte[]> cache = new LinkedHashMap<>(16, 0.75f, true) {
         @Override
@@ -41,8 +42,17 @@ public class BlockDevice implements Closeable {
     };
 
     public BlockDevice(Path path) throws IOException {
+        this(path, false);
+    }
+
+    /**
+     * @param forWriting open read-write. Raw devices are usually {@code root:rw},
+     *                   so this fails for an ordinary account even when reading works.
+     */
+    public BlockDevice(Path path, boolean forWriting) throws IOException {
         this.name = path.toString();
-        this.file = new RandomAccessFile(path.toFile(), "r");
+        this.writable = forWriting;
+        this.file = new RandomAccessFile(path.toFile(), forWriting ? "rw" : "r");
         this.channel = file.getChannel();
 
         long length = channel.size();
@@ -56,6 +66,10 @@ public class BlockDevice implements Closeable {
     /** Device or image this is reading. */
     public String name() {
         return name;
+    }
+
+    public boolean isWritable() {
+        return writable;
     }
 
     /** Total bytes, or 0 if the device would not say. */
@@ -94,6 +108,49 @@ public class BlockDevice implements Closeable {
             System.arraycopy(chunk, within, target, targetOffset + done, take);
             done += take;
         }
+    }
+
+    /**
+     * Overwrites bytes at {@code offset}.
+     *
+     * <p>Raw devices only accept whole sectors on sector boundaries, so this is a
+     * read-modify-write of the aligned chunks the bytes land in.
+     */
+    public void write(long offset, byte[] source, int sourceOffset, int length)
+            throws IOException {
+        if (!writable) {
+            throw new IOException("Opened read-only: " + name);
+        }
+        int done = 0;
+        while (done < length) {
+            long position = offset + done;
+            long chunkStart = Math.floorDiv(position, CHUNK) * (long) CHUNK;
+            byte[] chunk = chunk(chunkStart);
+
+            int within = (int) (position - chunkStart);
+            int take = Math.min(chunk.length - within, length - done);
+            if (take <= 0) throw new EOFException("Write past the end of " + name);
+
+            System.arraycopy(source, sourceOffset + done, chunk, within, take);
+            writeChunk(chunkStart, chunk);
+            done += take;
+        }
+    }
+
+    private void writeChunk(long chunkStart, byte[] chunk) throws IOException {
+        ByteBuffer buffer = ByteBuffer.wrap(chunk);
+        int written = 0;
+        while (buffer.hasRemaining()) {
+            int n = channel.write(buffer, chunkStart + written);
+            if (n <= 0) throw new IOException("Device refused the write at " + chunkStart);
+            written += n;
+        }
+        cache.put(chunkStart, chunk);
+    }
+
+    /** Forces everything written so far out to the device. */
+    public void flush() throws IOException {
+        if (writable) channel.force(false);
     }
 
     private byte[] chunk(long chunkStart) throws IOException {

@@ -17,7 +17,7 @@ public class WhalePiHostApp extends Application {
     @Override
     public void start(Stage stage) {
         MainView view = new MainView(stage);
-        Scene scene = new Scene(view, 1040, 840);
+        Scene scene = new Scene(view, 1040, 920);
 
         var css = WhalePiHostApp.class.getResource("/whalepihost/whalepihost.css");
         if (css != null) scene.getStylesheets().add(css.toExternalForm());
@@ -27,7 +27,7 @@ public class WhalePiHostApp extends Application {
 
         stage.setTitle("WhalePi Host");
         stage.setMinWidth(820);
-        stage.setMinHeight(640);
+        stage.setMinHeight(680);
         stage.setScene(scene);
         // A card read straight off its device holds that device open until released.
         stage.setOnHidden(e -> view.dispose());
