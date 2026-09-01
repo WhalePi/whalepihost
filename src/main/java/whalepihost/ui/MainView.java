@@ -168,6 +168,7 @@ public class MainView extends BorderPane {
 
         Button refresh = quietButton("Refresh", Icons.REFRESH);
         refresh.setOnAction(e -> refreshVolumes());
+        matchHeight(refresh, volumeBox);
 
         scanButton.setGraphic(Icons.of(Icons.SEARCH, 15, Palette.PRIMARY));
         scanButton.setOnAction(e -> startScan());
@@ -359,6 +360,7 @@ public class MainView extends BorderPane {
 
         Button browse = quietButton("Browse…", Icons.FOLDER_OPEN);
         browse.setOnAction(e -> chooseDestinationFolder());
+        matchHeight(browse, destField);
 
         downloadButton.getStyleClass().add("button-primary");
         downloadButton.setGraphic(Icons.of(Icons.DOWNLOAD, 16, Palette.BACKGROUND));
@@ -850,6 +852,18 @@ public class MainView extends BorderPane {
         button.getStyleClass().add("button-quiet");
         button.setGraphic(Icons.of(iconPath, 13, Palette.TEXT_DIM));
         return button;
+    }
+
+    /**
+     * A button that trails a field or combo reads as part of it, so it should be
+     * the same height. The quiet style is a smaller font with tighter padding, so
+     * left alone it sits as a short box floating in the middle of the row; tracking
+     * the neighbour's live height keeps them level whatever the platform's fonts do.
+     */
+    private static void matchHeight(Region button, Region neighbour) {
+        button.prefHeightProperty().bind(neighbour.heightProperty());
+        button.setMinHeight(Region.USE_PREF_SIZE);
+        button.setMaxHeight(Region.USE_PREF_SIZE);
     }
 
     private static Label dim(String text) {
