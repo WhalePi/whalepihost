@@ -23,7 +23,7 @@
     <!-- Directory assembled by antrun and used as the jpackage input -->
     <app.dir>${project.build.directory}/app</app.dir>
     <installer.dir>${project.build.directory}/installer</installer.dir>
-    <app.vendor>PAMGuard / WhalePi</app.vendor>
+    <app.vendor>PAMGuard-WhalePi</app.vendor>
     <app.copyright>Copyright (c) WhalePi</app.copyright>
   </properties>
 
