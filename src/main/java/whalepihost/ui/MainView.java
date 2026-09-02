@@ -46,10 +46,13 @@ import javafx.stage.Stage;
 import javafx.util.Duration;
 
 import whalepihost.copy.CopyJob;
+import whalepihost.copy.DeleteJob;
 import whalepihost.copy.ScanJob;
 import whalepihost.model.CardContents;
 import whalepihost.model.CardScanner;
+import whalepihost.model.CardSource;
 import whalepihost.model.DataNode;
+import whalepihost.model.DeleteResult;
 import whalepihost.model.FolderStats;
 import whalepihost.model.Volume;
 
@@ -76,6 +79,7 @@ public class MainView extends BorderPane {
     private final TextField destField = new TextField();
     private final Label destPreview = new Label();
     private final Button downloadButton = new Button("Download");
+    private final Button deleteButton = new Button();
 
     private final SettingsPane settingsPane = new SettingsPane(
             message -> status(message, "status-ok"),
@@ -372,12 +376,19 @@ public class MainView extends BorderPane {
             }
         });
 
+        // Small, red and wordless: clearing a card is an occasional job beside the one
+        // this panel is for, and it should not compete with Download for the eye.
+        deleteButton.getStyleClass().addAll("button-quiet", "button-danger");
+        deleteButton.setGraphic(Icons.of(Icons.DELETE, 15, Palette.RED));
+        deleteButton.setTooltip(new Tooltip("Delete the ticked items from the card"));
+        deleteButton.setOnAction(e -> startDelete());
+
         destPreview.getStyleClass().add("path-label");
 
         HBox row = new HBox(10, new Label("Folder:"), destField, browse);
         row.setAlignment(Pos.CENTER_LEFT);
 
-        HBox actions = new HBox(12, destPreview, spacer(), downloadButton);
+        HBox actions = new HBox(12, destPreview, spacer(), deleteButton, downloadButton);
         actions.setAlignment(Pos.CENTER_LEFT);
 
         return panel(3, "Download to", Icons.DOWNLOAD, new VBox(10, row, actions));
@@ -460,7 +471,10 @@ public class MainView extends BorderPane {
 
     /** Releases the card when the window closes. */
     public void dispose() {
-        if (runningTask != null) runningTask.cancel();
+        // Not cancel(): interrupting the worker would close the device channel out from
+        // under it, and a delete cut off mid-write is exactly what must not happen. The
+        // jobs watch isCancelled() and stop at the next safe point instead.
+        if (runningTask != null) runningTask.cancel(false);
         closeCard();
     }
 
@@ -548,12 +562,14 @@ public class MainView extends BorderPane {
         if (contents == null) {
             setSelectionText("nothing", false);
             downloadButton.setDisable(true);
+            deleteButton.setDisable(true);
             return;
         }
         FolderStats totals = contents.selectedTotals();
         setSelectionText(totals.fileCount() + " files, "
                 + CardScanner.formatBytes(totals.totalBytes()), totals.fileCount() > 0);
         downloadButton.setDisable(totals.fileCount() == 0 || isBusy());
+        deleteButton.setDisable(totals.fileCount() == 0 || isBusy());
     }
 
     /** Green once there is something to download, dim while there is not. */
@@ -624,6 +640,84 @@ public class MainView extends BorderPane {
             showError("Download failed", error == null ? "Unknown error." : error.getMessage());
         });
         runTask(job);
+    }
+
+    /**
+     * Clears the ticked items off the card, once the user has said so twice.
+     *
+     * <p>Afterwards the card is read again rather than the tree being patched up: what
+     * is on the card is now a different thing from what was scanned, and showing counts
+     * that came from before the delete would be worse than the second's wait.
+     */
+    private void startDelete() {
+        if (contents == null) return;
+        List<DataNode> selected = contents.selectedItems();
+        if (selected.isEmpty()) {
+            status("Nothing is ticked to delete.", "status-error");
+            return;
+        }
+
+        CardSource source = contents.getSource();
+        if (!source.canDelete()) {
+            showInfo("Nothing can be deleted from this card", source.deleteBlockedReason());
+            return;
+        }
+
+        List<DataNode> doomed = DeleteDialog.ask(stage, selected,
+                getScene() == null ? List.of() : getScene().getStylesheets());
+        if (doomed.isEmpty()) {
+            status("Nothing was deleted.", null);
+            return;
+        }
+
+        DeleteJob job = new DeleteJob(source, doomed);
+        setBusy(true, "Deleting…");
+        progressBar.progressProperty().bind(job.progressProperty());
+        job.messageProperty().addListener((obs, old, message) -> status(message, "status-busy"));
+
+        job.setOnSucceeded(e -> {
+            finishDelete();
+            showDeleted(job.getValue());
+            startScan();
+        });
+        job.setOnFailed(e -> {
+            finishDelete();
+            Throwable error = job.getException();
+            status("Delete failed.", "status-error");
+            showError("Delete failed", error == null ? "Unknown error." : error.getMessage());
+            startScan();
+        });
+        runTask(job);
+    }
+
+    private void finishDelete() {
+        progressBar.progressProperty().unbind();
+        progressBar.setProgress(0);
+        setBusy(false, null);
+    }
+
+    private void showDeleted(DeleteResult result) {
+        String freed = CardScanner.formatBytes(result.bytes());
+        String summary = "Deleted " + result.files() + " files and freed " + freed + ".";
+
+        if (result.problems().isEmpty()) {
+            status(summary, "status-ok");
+            return;
+        }
+        status(summary + " " + result.problems().size() + " item(s) were left behind.",
+                "status-error");
+
+        Alert alert = styled(new Alert(Alert.AlertType.WARNING));
+        alert.setTitle("Delete finished with problems");
+        alert.setHeaderText(result.problems().size() + " item(s) could not be removed");
+        alert.setContentText(summary + "\n\nAnything listed below is still on the card. If a "
+                + "card keeps refusing, check it with e2fsck on a Linux machine.");
+        TextArea area = new TextArea(String.join("\n", result.problems()));
+        area.setEditable(false);
+        area.setPrefRowCount(Math.min(12, result.problems().size() + 1));
+        alert.getDialogPane().setExpandableContent(area);
+        alert.getDialogPane().setExpanded(true);
+        alert.showAndWait();
     }
 
     private void finishDownload() {
@@ -736,6 +830,7 @@ public class MainView extends BorderPane {
         tree.setDisable(busy);
         settingsPane.setDisable(busy || contents == null);
         downloadButton.setDisable(busy);
+        deleteButton.setDisable(busy);
         progressBar.setVisible(busy);
         if (busy) {
             progressBar.setProgress(ProgressBar.INDETERMINATE_PROGRESS);
@@ -749,6 +844,7 @@ public class MainView extends BorderPane {
         selectAllButton.setDisable(!loaded);
         selectNoneButton.setDisable(!loaded);
         downloadButton.setDisable(!loaded);
+        deleteButton.setDisable(!loaded);
         if (!loaded) {
             tree.setRoot(null);
             settingsPane.clear();

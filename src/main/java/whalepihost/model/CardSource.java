@@ -59,6 +59,38 @@ public interface CardSource extends Closeable {
         return "";
     }
 
+    // --------------------------------------------------------------------- deleting
+
+    /** Told about each file as it goes, so a long delete can say what it is doing. */
+    interface DeleteProgress {
+        void deleted(String path);
+
+        default boolean isCancelled() { return false; }
+    }
+
+    /**
+     * True if files can be removed from this card. Stricter than {@link #canWrite()}:
+     * an ext4 card also has to be one this program knows how to free space on.
+     */
+    default boolean canDelete() {
+        return false;
+    }
+
+    /** Why files cannot be removed, for the user. "" when they can be. */
+    default String deleteBlockedReason() {
+        return "Files cannot be removed from this card.";
+    }
+
+    /**
+     * Removes a file, or a folder and everything under it.
+     *
+     * <p>This is not reversible and there is no trash to fall back on, so callers are
+     * expected to have asked first.
+     */
+    default DeleteResult delete(CardFile file, DeleteProgress progress) throws IOException {
+        throw new IOException(deleteBlockedReason());
+    }
+
     /** Opens whatever kind of card {@code volume} refers to. */
     static CardSource open(Volume volume) throws IOException {
         Path device = volume.device();

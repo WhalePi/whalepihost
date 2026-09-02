@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 
+import whalepihost.ext4.Ext4Deleter;
 import whalepihost.ext4.Ext4DirEntry;
 import whalepihost.ext4.Ext4FileSystem;
 import whalepihost.ext4.Ext4Inode;
@@ -96,6 +97,61 @@ public class Ext4CardSource implements CardSource {
             throw new IOException("That file is not on this card");
         }
         fs.overwriteInPlace(ext4File.inode(), content);
+    }
+
+    @Override
+    public boolean canDelete() {
+        return fs.deleteBlockedReason().isEmpty();
+    }
+
+    @Override
+    public String deleteBlockedReason() {
+        String reason = fs.deleteBlockedReason();
+        // The commonest reason by far is permission, and the writer's own explanation
+        // of how to get it is the useful one.
+        return reason.isEmpty() || fs.isWritable() ? reason : writeBlockedReason();
+    }
+
+    /**
+     * Removes a file or folder from the card itself.
+     *
+     * <p>The ext4 layer works from a parent directory and a name, because that is what
+     * a directory entry is. The card's paths are the Pi's own absolute paths, so the
+     * parent is simply the path with its last element taken off.
+     */
+    @Override
+    public DeleteResult delete(CardFile file, DeleteProgress progress) throws IOException {
+        if (!(file instanceof Ext4CardFile ext4File)) {
+            throw new IOException("That file is not on this card");
+        }
+        String path = ext4File.path();
+        while (path.length() > 1 && path.endsWith("/")) {
+            path = path.substring(0, path.length() - 1);
+        }
+        int slash = path.lastIndexOf('/');
+        if (slash < 0 || path.equals("/")) {
+            throw new IOException("The root of the card cannot be deleted");
+        }
+        String parentPath = slash == 0 ? "/" : path.substring(0, slash);
+        Ext4Inode parent = fs.resolve(parentPath);
+        if (parent == null || !parent.isDirectory()) {
+            throw new IOException("The folder holding " + ext4File.name() + " could not be found");
+        }
+
+        String name = path.substring(slash + 1);
+        Ext4Deleter.Result result = fs.delete(parent, name, new Ext4Deleter.Progress() {
+            @Override
+            public void deleted(String deletedPath) {
+                progress.deleted(deletedPath);
+            }
+
+            @Override
+            public boolean isCancelled() {
+                return progress.isCancelled();
+            }
+        });
+        return new DeleteResult(result.files(), result.folders(), result.bytes(),
+                result.problems());
     }
 
     @Override

@@ -25,6 +25,10 @@ pick it from the list, and copy off what you want.
 3. **Download it** – tick the items you want (everything is ticked by default), choose a folder,
    and press Download. The files are copied into a new folder named for the unit and the time,
    for example `WhalePi_1A_20260830_142530/`.
+4. **Clear the card, if you want to** – the small red bin beside Download removes the ticked
+   items from the card itself, so it can go back out on the next deployment. It asks twice
+   first, and the recordings, database, binaries and configuration can each be kept back in
+   the process — see below.
 
 The Contents panel has two tabs: **Files**, the tree above, and **Settings**, a form over the
 unit's `whalepidog_settings.json` — see below.
@@ -118,6 +122,54 @@ Every save is read back off the card and compared field by field before it is re
 successful. The write path is tested against ext4 images at both 1 KiB and 4 KiB block sizes,
 with `e2fsck` confirming the filesystem is still clean afterwards.
 
+## Clearing a card
+
+![Deleting from a card](docs/delete.png)
+
+The bin beside Download deletes the ticked items **from the card**. There is no wastebasket on
+an SD card and nothing is copied anywhere first, so it asks twice:
+
+1. A dialog listing what the selection amounts to — so many sound files, the database, so many
+   binary files, the configuration — with a tick box for each, so any of them can be kept back.
+   The configuration starts unticked, because losing `whalepidog_settings.json` makes the card
+   unrecognisable to this program and to the Pi.
+2. The same dialog then turns into the last word: a button that names the number of files it is
+   about to destroy, and Cancel.
+
+Day folders and files go; the folders that contain them (`PAMRecordings`, `PAMBinary`) stay, so
+the unit can be redeployed without recreating them.
+
+### What deleting an unmounted card actually does
+
+This is the largest change WhalePi Host makes to a card, and unlike a settings save it cannot
+avoid the bookkeeping: a directory entry is rewritten, blocks and inodes go back into their
+group's bitmaps, three levels of free counts move, and on a modern ext4 each of those carries a
+checksum of its own — bitmap, group descriptor, directory block, inode and superblock, four
+different recipes between them.
+
+Two decisions keep that safe:
+
+- **The directory entry goes first.** Everything below it is unreachable from that moment, and
+  only then are the inodes and blocks handed back. If a delete is interrupted, what is left is
+  inodes nobody points at, which `e2fsck` reclaims — never a live file whose blocks the
+  filesystem believes are free, which is the failure that would cost somebody else's data.
+- **A folder's contents are never unhooked one by one.** The folder's own blocks are freed
+  whole, so exactly one name is rewritten however many thousands of recordings are underneath.
+  On a 6,000-file hash-indexed directory that is the difference between 0.2 seconds and 50.
+
+Deleting is refused outright, with a reason, when the card was opened read-only, when it was not
+cleanly unmounted (a journal this program does not replay may still hold changes), or when the
+filesystem uses `bigalloc`, `meta_bg` or its own quota accounting — none of which appear on a
+Raspberry Pi card, and each of which would need the bookkeeping done differently.
+
+The delete path is tested against `mke2fs` images at 1 KiB and 4 KiB block sizes, modern and
+legacy: extent trees deep enough to need an index block, indirect-mapped files down to the
+triple-indirect level, sparse files, empty files, symlinks, hash-indexed directories of 6,000
+names emptied one at a time, and whole trees removed at once. Every case must leave `e2fsck -fn`
+printing nothing but its summary, every surviving file must still read byte-for-byte identical,
+and a set of control runs — a freed block left marked in use, a free count off by a hundred, a
+flipped checksum — confirms `e2fsck` really would have said so.
+
 ## Where the paths come from
 
 Every path is read from `whalepidog_settings.json` rather than assumed:
@@ -210,10 +262,14 @@ src/main/java/whalepihost/
     Ext4CardSource.java      a card read directly off its ext4 partition
     CardContents.java        a scanned card
     DataNode.java            one row of the contents tree
+    DeleteResult.java        what a delete achieved, and what it left behind
     FolderStats.java         recursive file count and size
     Volume.java              the card list, including unmounted ext4 partitions
   ext4/
     Ext4FileSystem.java      the ext2/3/4 reader, plus in-place rewrites
+    Ext4Deleter.java         unlinks a file or a whole tree
+    Ext4FreeSpace.java       gives blocks and inodes back, bitmaps and counts
+    Ext4Checksum.java        the CRC32C and CRC-16 sums ext4 keeps over metadata
     BlockDevice.java         aligned, cached reads over a device or image
     Ext4Inode.java           one inode
     Ext4DirEntry.java        one directory entry
@@ -222,6 +278,7 @@ src/main/java/whalepihost/
   copy/
     ScanJob.java             background scan
     CopyJob.java             background copy, with byte-level progress
+    DeleteJob.java           background delete, with file-level progress
   settings/
     SettingsSchema.java      the editable parameters, in form order
     SettingsField.java       one parameter: type, limits, help text
@@ -229,6 +286,7 @@ src/main/java/whalepihost/
   ui/
     MainView.java            the window
     SettingsPane.java        the Settings tab, generated from the schema
+    DeleteDialog.java        the two-page "are you sure" before a delete
     Icons.java, Palette.java the phone app's icons and colours
 src/main/resources/whalepihost/
   whalepihost.css            dark theme matching the phone app

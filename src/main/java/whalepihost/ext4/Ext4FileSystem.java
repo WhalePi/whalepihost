@@ -33,8 +33,23 @@ public class Ext4FileSystem implements Closeable {
     private static final int INCOMPAT_64BIT = 0x0080;
     /** s_feature_incompat: the superblock carries the checksum seed directly. */
     private static final int INCOMPAT_CSUM_SEED = 0x2000;
+    /** s_feature_incompat: the journal holds changes that have not reached the disk. */
+    private static final int INCOMPAT_NEEDS_RECOVERY = 0x0004;
+    /** s_feature_incompat: group descriptors are scattered rather than in one table. */
+    private static final int INCOMPAT_META_BG = 0x0010;
     /** s_feature_ro_compat: metadata carries CRC32C checksums. */
     private static final int RO_COMPAT_METADATA_CSUM = 0x0400;
+    /** s_feature_ro_compat: group descriptors carry CRC-16 checksums (the older form). */
+    private static final int RO_COMPAT_GDT_CSUM = 0x0010;
+    /** s_feature_ro_compat: the filesystem keeps quota accounting of its own. */
+    private static final int RO_COMPAT_QUOTA = 0x0100;
+    /** s_feature_ro_compat: space is tracked in multi-block clusters, not blocks. */
+    private static final int RO_COMPAT_BIGALLOC = 0x0200;
+
+    /** bg_flags: the group's block bitmap has never been written. */
+    static final int BG_BLOCK_UNINIT = 0x0002;
+    /** bg_flags: the group's inode bitmap has never been written. */
+    static final int BG_INODE_UNINIT = 0x0001;
 
     /** The filesystem root always lives in inode 2. */
     public static final long ROOT_INODE = 2;
@@ -52,7 +67,12 @@ public class Ext4FileSystem implements Closeable {
     private final int state;
     private final String volumeName;
     private final boolean metadataChecksums;
+    private final boolean groupDescriptorChecksums;
     private final int checksumSeed;
+    private final byte[] uuid = new byte[16];
+    private final int incompatibleFeatures;
+    private final int readOnlyFeatures;
+    private final long groupCount;
 
     private Ext4FileSystem(BlockDevice device) throws IOException {
         this.device = device;
@@ -76,6 +96,8 @@ public class Ext4FileSystem implements Closeable {
         this.inodeSize = revision == 0 ? 128 : (sb.getShort(0x58) & 0xFFFF);
 
         int incompatible = sb.getInt(0x60);
+        this.incompatibleFeatures = incompatible;
+        this.readOnlyFeatures = sb.getInt(0x64);
         boolean sixtyFourBit = (incompatible & INCOMPAT_64BIT) != 0;
         int declaredDescSize = sb.getShort(0xFE) & 0xFFFF;
         this.descriptorSize = sixtyFourBit && declaredDescSize >= 64 ? declaredDescSize : 32;
@@ -85,14 +107,13 @@ public class Ext4FileSystem implements Closeable {
 
         this.volumeName = readName(sb, 0x78, 16);
 
-        this.metadataChecksums = (sb.getInt(0x64) & RO_COMPAT_METADATA_CSUM) != 0;
-        if ((incompatible & INCOMPAT_CSUM_SEED) != 0) {
-            this.checksumSeed = sb.getInt(0x270);
-        } else {
-            byte[] uuid = new byte[16];
-            for (int i = 0; i < 16; i++) uuid[i] = sb.get(0x68 + i);
-            this.checksumSeed = Ext4Checksum.crc32c(~0, uuid);
-        }
+        for (int i = 0; i < 16; i++) uuid[i] = sb.get(0x68 + i);
+
+        this.metadataChecksums = (readOnlyFeatures & RO_COMPAT_METADATA_CSUM) != 0;
+        this.groupDescriptorChecksums = (readOnlyFeatures & RO_COMPAT_GDT_CSUM) != 0;
+        this.checksumSeed = (incompatible & INCOMPAT_CSUM_SEED) != 0
+                ? sb.getInt(0x270)
+                : Ext4Checksum.crc32c(~0, uuid);
 
         if (blockSize < 1024 || blockSize > 65536) {
             throw new Ext4Exception("Unsupported ext4 block size: " + blockSize);
@@ -100,6 +121,7 @@ public class Ext4FileSystem implements Closeable {
         if (inodesPerGroup == 0 || blocksPerGroup == 0) {
             throw new Ext4Exception("Corrupt ext4 superblock: empty block or inode groups");
         }
+        this.groupCount = (blockCount - firstDataBlock + blocksPerGroup - 1) / blocksPerGroup;
     }
 
     /** Opens the filesystem on a partition device or image file. */
@@ -428,6 +450,126 @@ public class Ext4FileSystem implements Closeable {
         }
         device.flush();
     }
+
+    // ---------------------------------------------------------------- deleting
+
+    /**
+     * Why files cannot be deleted from this card, for the user, or "" when they can.
+     *
+     * <p>Deleting is a far bigger change than {@link #overwriteInPlace}: directory
+     * entries, block and inode bitmaps, group free counts and the superblock all move.
+     * Each of the features refused here would need that bookkeeping done differently,
+     * and none of them appears on a Raspberry Pi card, so the honest answer is to say
+     * no rather than to guess.
+     */
+    public String deleteBlockedReason() {
+        if (!isWritable()) return "This card was opened for reading only.";
+        if (!isClean() || (incompatibleFeatures & INCOMPAT_NEEDS_RECOVERY) != 0) {
+            return "This card was not shut down cleanly, so changes to it may not have "
+                    + "reached the disk yet — on a journalled filesystem they are sitting in "
+                    + "the journal. WhalePi Host does not replay a journal, and removing files "
+                    + "from underneath one would corrupt the card.\n\n"
+                    + "Put the card back in the WhalePi and shut it down properly, or mount it "
+                    + "once on a Linux machine, then try again. Reading and downloading still "
+                    + "work in the meantime.";
+        }
+        if ((readOnlyFeatures & RO_COMPAT_BIGALLOC) != 0) {
+            return "This filesystem tracks space in clusters (bigalloc), which WhalePi Host "
+                    + "cannot free correctly.";
+        }
+        if ((incompatibleFeatures & INCOMPAT_META_BG) != 0) {
+            return "This filesystem scatters its group descriptors (meta_bg), which WhalePi "
+                    + "Host cannot update.";
+        }
+        if ((readOnlyFeatures & RO_COMPAT_QUOTA) != 0) {
+            return "This filesystem keeps quota accounting, which WhalePi Host cannot keep "
+                    + "up to date when files are removed.";
+        }
+        return "";
+    }
+
+    /**
+     * Removes {@code name} from {@code parent}, together with everything beneath it.
+     *
+     * @return what was freed, and anything that had to be skipped
+     */
+    public Ext4Deleter.Result delete(Ext4Inode parent, String name, Ext4Deleter.Progress progress)
+            throws IOException {
+        String blocked = deleteBlockedReason();
+        if (!blocked.isEmpty()) throw new Ext4Exception(blocked);
+        return new Ext4Deleter(this, progress).delete(parent, name);
+    }
+
+    // -------------------------------------------------- internals for the deleter
+
+    BlockDevice device() { return device; }
+
+    long blocksPerGroup() { return blocksPerGroup; }
+
+    long inodesPerGroup() { return inodesPerGroup; }
+
+    long firstDataBlock() { return firstDataBlock; }
+
+    long blockCount() { return blockCount; }
+
+    long inodeCount() { return inodeCount; }
+
+    long groupCount() { return groupCount; }
+
+    int inodeSize() { return inodeSize; }
+
+    boolean metadataChecksums() { return metadataChecksums; }
+
+    boolean groupDescriptorChecksums() { return groupDescriptorChecksums; }
+
+    int checksumSeed() { return checksumSeed; }
+
+    byte[] uuid() { return uuid; }
+
+    /** Byte offset of a group's descriptor within the group descriptor table. */
+    long groupDescriptorOffset(long group) {
+        return (firstDataBlock + 1) * (long) blockSize + group * descriptorSize;
+    }
+
+    int descriptorSize() { return descriptorSize; }
+
+    /** The whole superblock, ready to be modified and handed back to {@link #writeSuperblock}. */
+    byte[] readSuperblock() throws IOException {
+        byte[] raw = new byte[1024];
+        device.readInto(SUPERBLOCK_OFFSET, raw, 0, 1024);
+        return raw;
+    }
+
+    void writeSuperblock(byte[] raw) throws IOException {
+        if (metadataChecksums) Ext4Checksum.applySuperblockChecksum(raw);
+        device.write(SUPERBLOCK_OFFSET, raw, 0, 1024);
+    }
+
+    byte[] readRawInode(long number) throws IOException {
+        byte[] raw = new byte[inodeSize];
+        device.readInto(inodeOffset(number), raw, 0, inodeSize);
+        return raw;
+    }
+
+    /** Writes an inode back, recomputing the checksum a modern ext4 checks it against. */
+    void writeRawInode(long number, byte[] raw) throws IOException {
+        if (metadataChecksums) {
+            Ext4Checksum.applyInodeChecksum(raw, inodeSize, number, checksumSeed);
+        }
+        device.write(inodeOffset(number), raw, 0, inodeSize);
+    }
+
+    /** Device block holding a given block of a file, or 0 for a hole. */
+    long blockOf(Ext4Inode inode, long logicalBlock) throws IOException {
+        return physicalBlock(inode, logicalBlock);
+    }
+
+    /** Reads one node of an extent tree from the device. */
+    ByteBuffer readBlock(long block) throws IOException {
+        return device.read(block * (long) blockSize, blockSize);
+    }
+
+    static int extentMagic() { return EXTENT_MAGIC; }
 
     // ------------------------------------------------------------ extent mapping
 

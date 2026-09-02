@@ -53,6 +53,14 @@ public class Ext4Inode {
 
     public boolean isSymlink() { return (mode & MODE_MASK) == MODE_LINK; }
 
+    /**
+     * True for a symlink short enough to live inside the inode.
+     *
+     * <p>Such a link owns no blocks at all: what would be its block map is the target
+     * path, so anything that walks the map has to leave it alone.
+     */
+    boolean isFastSymlink() { return isSymlink() && !usesExtents() && size() < 60; }
+
     boolean usesExtents() { return (flags & FLAG_EXTENTS) != 0; }
 
     boolean hasInlineData() { return (flags & FLAG_INLINE_DATA) != 0; }
