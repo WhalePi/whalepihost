@@ -1,0 +1,105 @@
+name: Windows installer
+
+# Builds target\installer\WhalePi Host-<version>.msi with jpackage, through the
+# installer-windows profile in pom.xml, which activates by OS on the runner.
+on:
+  push:
+    branches: [main]
+    # A pushed version tag always builds, and also publishes a release.
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  # A push to main only builds when pom.xml carries a version we have not built
+  # before: "whenever I commit a new version".
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      changed: ${{ steps.check.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - id: check
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os, subprocess, xml.etree.ElementTree as ET
+
+          NS = {"m": "http://maven.apache.org/POM/4.0.0"}
+
+          def version(text):
+              return ET.fromstring(text).findtext("m:version", namespaces=NS)
+
+          with open("pom.xml", "rb") as f:
+              current = version(f.read())
+
+          previous = None
+          try:
+              previous = version(subprocess.check_output(["git", "show", "HEAD^:pom.xml"]))
+          except subprocess.CalledProcessError:
+              pass  # first commit, or pom.xml is new
+
+          ref = os.environ.get("GITHUB_REF", "")
+          on_branch = os.environ["GITHUB_EVENT_NAME"] == "push" and not ref.startswith("refs/tags/")
+          changed = (not on_branch) or current != previous
+
+          print(f"pom version {current} (previous commit: {previous}) -> build={changed}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"version={current}\n")
+              out.write(f"changed={str(changed).lower()}\n")
+          PY
+
+  installer:
+    needs: version
+    if: needs.version.outputs.changed == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      # jpackage builds an MSI through WiX 3; the runner image does not always
+      # carry it, and jpackage finds it on PATH.
+      - name: Ensure WiX 3 is on PATH
+        shell: pwsh
+        run: |
+          $bin = Get-ChildItem 'C:\Program Files (x86)\WiX Toolset v3*\bin\candle.exe' -ErrorAction SilentlyContinue |
+                 Select-Object -First 1
+          if (-not $bin) {
+            choco install wixtoolset --version 3.14.1 --no-progress -y
+            $bin = Get-ChildItem 'C:\Program Files (x86)\WiX Toolset v3*\bin\candle.exe' -ErrorAction SilentlyContinue |
+                   Select-Object -First 1
+          }
+          if (-not $bin) { throw 'WiX 3 not found after install' }
+          Add-Content -Path $env:GITHUB_PATH -Value $bin.DirectoryName
+
+      - name: Build installer
+        run: mvn -B -Pinstaller-windows clean verify
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: whalepihost-${{ needs.version.outputs.version }}-msi
+          path: target/installer/*.msi
+          if-no-files-found: error
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" --title "${GITHUB_REF_NAME}" --generate-notes \
+            || echo "release ${GITHUB_REF_NAME} already exists"
+          gh release upload "${GITHUB_REF_NAME}" target/installer/*.msi --clobber
