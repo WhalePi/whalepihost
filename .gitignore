@@ -12,3 +12,6 @@ target/
 # OS
 .DS_Store
 Thumbs.db
+
+# Signing credentials (never commit)
+build/macos/apple_creds.sh

@@ -146,6 +146,18 @@ public class DataNode {
         updating = false;
     }
 
+    /**
+     * The card-level group this node belongs to — Sound recordings, Database, and so
+     * on — which is what the delete dialog offers as a thing to keep or lose.
+     */
+    public DataNode group() {
+        DataNode node = this;
+        while (node.parent != null && node.parent.parent != null) {
+            node = node.parent;
+        }
+        return node;
+    }
+
     /** Every selected copy unit in this subtree, in tree order. */
     public void collectSelected(List<DataNode> out) {
         if (copyUnit && selected.get()) {
