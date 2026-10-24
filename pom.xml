@@ -25,6 +25,12 @@
     <installer.dir>${project.build.directory}/installer</installer.dir>
     <app.vendor>PAMGuard-WhalePi</app.vendor>
     <app.copyright>Copyright (c) WhalePi</app.copyright>
+    <!--
+      jpackage output type on macOS. DMG gives a finished (unsigned) installer.
+      build/macos/build_and_sign.sh overrides this with APP_IMAGE so it has a
+      bare .app to sign before it builds and notarises the DMG itself.
+    -->
+    <mac.package.type>DMG</mac.package.type>
   </properties>
 
   <dependencies>
@@ -147,7 +153,7 @@
               <vendor>${app.vendor}</vendor>
               <copyright>${app.copyright}</copyright>
               <description>${project.description}</description>
-              <type>DMG</type>
+              <type>${mac.package.type}</type>
               <input>${app.dir}</input>
               <destination>${installer.dir}</destination>
               <mainJar>${project.build.finalName}.jar</mainJar>

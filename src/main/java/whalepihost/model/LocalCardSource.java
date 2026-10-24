@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
@@ -91,6 +92,81 @@ public class LocalCardSource implements CardSource {
             }
         } finally {
             Files.deleteIfExists(temporary);
+        }
+    }
+
+    @Override
+    public boolean canDelete() {
+        return Files.isWritable(root);
+    }
+
+    @Override
+    public String deleteBlockedReason() {
+        return canDelete() ? ""
+                : "This drive is mounted read-only, so nothing can be removed from it.";
+    }
+
+    /**
+     * Deletes through the mounted filesystem, deepest first — the only order in which
+     * a folder is empty by the time its turn comes.
+     */
+    @Override
+    public DeleteResult delete(CardFile file, DeleteProgress progress) throws IOException {
+        Counter counter = new Counter();
+        remove(Path.of(file.path()), progress, counter);
+        return counter.result();
+    }
+
+    private void remove(Path path, DeleteProgress progress, Counter counter) {
+        if (progress.isCancelled()) return;
+
+        if (Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)) {
+            try (var stream = Files.list(path)) {
+                for (Path child : stream.toList()) {
+                    remove(child, progress, counter);
+                }
+            } catch (IOException e) {
+                counter.problems.add(path + ": " + describe(e));
+                return; // the folder still has things in it, so do not try to remove it
+            }
+            if (progress.isCancelled()) return;
+        }
+
+        long size = 0;
+        try {
+            if (Files.isRegularFile(path, LinkOption.NOFOLLOW_LINKS)) size = Files.size(path);
+        } catch (IOException ignored) {
+            // a size we cannot read only makes the total less exact
+        }
+        try {
+            boolean directory = Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS);
+            Files.delete(path);
+            if (directory) {
+                counter.folders++;
+            } else {
+                counter.files++;
+                counter.bytes += size;
+                progress.deleted(path.toString());
+            }
+        } catch (IOException e) {
+            counter.problems.add(path + ": " + describe(e));
+        }
+    }
+
+    private static String describe(IOException e) {
+        String message = e.getMessage();
+        return (message == null || message.isBlank()) ? e.getClass().getSimpleName() : message;
+    }
+
+    /** Running totals for one delete. */
+    private static final class Counter {
+        private final List<String> problems = new ArrayList<>();
+        private long files;
+        private long folders;
+        private long bytes;
+
+        private DeleteResult result() {
+            return new DeleteResult(files, folders, bytes, List.copyOf(problems));
         }
     }
 
