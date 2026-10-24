@@ -243,8 +243,20 @@ mvn clean verify
 
 Both installers bundle their own Java runtime, so users do not need Java installed.
 
-The macOS build is unsigned. On a Mac that has not seen it before, the first launch needs
-right-click → Open, or `xattr -dr com.apple.quarantine "/Applications/WhalePi Host.app"`.
+### Signing the macOS build
+
+The DMG above is unsigned, so on any Mac other than the one that built it the first launch
+needs right-click → Open, or
+`xattr -dr com.apple.quarantine "/Applications/WhalePi Host.app"`.
+
+To build a DMG that opens anywhere with no warning, sign and notarise it:
+
+```bash
+cd build/macos && ./build_and_sign.sh
+```
+
+That needs an Apple "Developer ID Application" certificate and notarisation credentials -
+see [build/macos/ReadMe.md](build/macos/ReadMe.md) for the setup and for what each step does.
 
 ## Project layout
 
@@ -293,6 +305,8 @@ src/main/resources/whalepihost/
   whalepi_icon.png           app icon
 src/main/deploy/
   whalepi.icns, whalepi.ico  installer icons
+build/macos/
+  build_and_sign.sh          signs and notarises the macOS DMG for distribution
 ```
 
 ## Related

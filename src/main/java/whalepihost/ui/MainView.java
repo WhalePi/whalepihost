@@ -382,6 +382,7 @@ public class MainView extends BorderPane {
         deleteButton.setGraphic(Icons.of(Icons.DELETE, 15, Palette.RED));
         deleteButton.setTooltip(new Tooltip("Delete the ticked items from the card"));
         deleteButton.setOnAction(e -> startDelete());
+        deleteButton.prefHeightProperty().bind(downloadButton.heightProperty());
 
         destPreview.getStyleClass().add("path-label");
 

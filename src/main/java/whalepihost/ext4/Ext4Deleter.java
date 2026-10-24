@@ -49,6 +49,13 @@ public final class Ext4Deleter {
     /** The magic at the start of an ext4 extended-attribute block. */
     private static final long XATTR_MAGIC = 0xEA020000L;
 
+    /** What is said about a name whose inode cannot be believed. */
+    private static final String UNFINISHED =
+            "the card has no finished record of it, which happens when the card is taken out "
+            + "while the WhalePi is still recording. Its name is gone, but the space it was "
+            + "using was left alone rather than risk handing back another file's; e2fsck on a "
+            + "Linux machine will reclaim it.";
+
     private final Ext4FileSystem fs;
     private final Ext4FreeSpace free;
     private final Progress progress;
@@ -81,8 +88,12 @@ public final class Ext4Deleter {
                         + "was removed");
                 return result();
             }
-            updateParent(parent, target.isDirectory());
-            freeTree(target, name);
+            updateParent(parent, isFolder(entry, target));
+            if (describes(entry, target)) {
+                freeTree(target, name);
+            } else {
+                problems.add(name + ": " + UNFINISHED);
+            }
             if (progress.isCancelled()) {
                 problems.add(name + ": stopped part way through. What is left of it is no "
                         + "longer reachable; e2fsck on a Linux machine will reclaim it.");
@@ -98,6 +109,27 @@ public final class Ext4Deleter {
     private Result result() {
         return new Result(files, folders, free.freedBlocks() * (long) fs.blockSize(),
                 List.copyOf(problems));
+    }
+
+    /**
+     * Whether the inode a directory entry points at really is the file that entry names.
+     *
+     * <p>An inode that never reached the card — the recording in progress when the card
+     * came out — leaves its slot holding whatever was there before, which may be a
+     * folder, or a file deleted long ago whose blocks something else is now using.
+     * Freeing on the strength of that record would hand back live files' space, so a
+     * name whose inode disagrees with it is unhooked and otherwise left alone.
+     */
+    private static boolean describes(Ext4DirEntry entry, Ext4Inode inode) {
+        if (!inode.isAllocated()) return false;
+        if (entry.typeUnknown()) return true;
+        return entry.isDirectory() == inode.isDirectory()
+                && entry.isRegularFile() == inode.isRegularFile();
+    }
+
+    /** Whether a name is a folder, believing the directory entry ahead of the inode. */
+    private static boolean isFolder(Ext4DirEntry entry, Ext4Inode inode) {
+        return entry.typeUnknown() ? inode.isDirectory() : entry.isDirectory();
     }
 
     private Ext4DirEntry lookup(Ext4Inode directory, String name) throws IOException {
@@ -126,10 +158,16 @@ public final class Ext4Deleter {
             }
             for (Ext4DirEntry entry : entries) {
                 if (progress.isCancelled()) return;
+                String childPath = path + "/" + entry.name();
                 try {
-                    freeTree(fs.inode(entry.inode()), path + "/" + entry.name());
+                    Ext4Inode child = fs.inode(entry.inode());
+                    if (describes(entry, child)) {
+                        freeTree(child, childPath);
+                    } else {
+                        problems.add(childPath + ": " + UNFINISHED);
+                    }
                 } catch (IOException e) {
-                    problems.add(path + "/" + entry.name() + ": " + describe(e));
+                    problems.add(childPath + ": " + describe(e));
                 }
             }
             if (progress.isCancelled()) return;

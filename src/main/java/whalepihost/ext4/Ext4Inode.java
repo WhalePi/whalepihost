@@ -21,6 +21,8 @@ public class Ext4Inode {
     private final int flags;
     private final long size;
     private final long modifiedEpochSeconds;
+    private final long deletedEpochSeconds;
+    private final int linkCount;
     private final byte[] blockData;
 
     /** Block map, worked out on first use and kept for the life of the handle. */
@@ -32,6 +34,8 @@ public class Ext4Inode {
         this.size = (raw.getInt(0x04) & 0xFFFFFFFFL)
                 | ((raw.getInt(0x6C) & 0xFFFFFFFFL) << 32);
         this.modifiedEpochSeconds = raw.getInt(0x10) & 0xFFFFFFFFL;
+        this.deletedEpochSeconds = raw.getInt(0x14) & 0xFFFFFFFFL;
+        this.linkCount = raw.getShort(0x1A) & 0xFFFF;
         this.flags = raw.getInt(0x20);
 
         this.blockData = new byte[60];
@@ -46,6 +50,20 @@ public class Ext4Inode {
     public long size() { return size; }
 
     public long modifiedEpochSeconds() { return modifiedEpochSeconds; }
+
+    /**
+     * True if this inode is really in use.
+     *
+     * <p>A slot in the inode table keeps whatever was last written there. An inode that
+     * has been freed still describes the file it used to be until something takes the
+     * slot over, and an inode written moments before the card was pulled out of a
+     * running Pi may not have reached the card at all — its slot still holds the
+     * previous occupant. Either way the record on the card is not the file being asked
+     * about, so nothing it says can be believed.
+     */
+    public boolean isAllocated() {
+        return mode != 0 && linkCount > 0 && deletedEpochSeconds == 0;
+    }
 
     public boolean isDirectory() { return (mode & MODE_MASK) == MODE_DIR; }
 

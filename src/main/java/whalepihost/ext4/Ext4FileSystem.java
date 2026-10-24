@@ -45,6 +45,10 @@ public class Ext4FileSystem implements Closeable {
     private static final int RO_COMPAT_QUOTA = 0x0100;
     /** s_feature_ro_compat: space is tracked in multi-block clusters, not blocks. */
     private static final int RO_COMPAT_BIGALLOC = 0x0200;
+    /** s_feature_compat: the filesystem carries a journal. */
+    private static final int COMPAT_HAS_JOURNAL = 0x0004;
+    /** s_feature_incompat: the journal lives on a separate device. */
+    private static final int INCOMPAT_JOURNAL_DEV = 0x0008;
 
     /** bg_flags: the group's block bitmap has never been written. */
     static final int BG_BLOCK_UNINIT = 0x0002;
@@ -70,9 +74,17 @@ public class Ext4FileSystem implements Closeable {
     private final boolean groupDescriptorChecksums;
     private final int checksumSeed;
     private final byte[] uuid = new byte[16];
+    private final int compatibleFeatures;
     private final int incompatibleFeatures;
     private final int readOnlyFeatures;
     private final long groupCount;
+
+    /**
+     * The journal's view of the card, when it holds writes that never reached their
+     * proper places. Null until the constructor has finished working it out, and null
+     * afterwards on a filesystem that was shut down cleanly.
+     */
+    private Ext4Journal journal;
 
     private Ext4FileSystem(BlockDevice device) throws IOException {
         this.device = device;
@@ -96,6 +108,7 @@ public class Ext4FileSystem implements Closeable {
         this.inodeSize = revision == 0 ? 128 : (sb.getShort(0x58) & 0xFFFF);
 
         int incompatible = sb.getInt(0x60);
+        this.compatibleFeatures = sb.getInt(0x5C);
         this.incompatibleFeatures = incompatible;
         this.readOnlyFeatures = sb.getInt(0x64);
         boolean sixtyFourBit = (incompatible & INCOMPAT_64BIT) != 0;
@@ -122,6 +135,30 @@ public class Ext4FileSystem implements Closeable {
             throw new Ext4Exception("Corrupt ext4 superblock: empty block or inode groups");
         }
         this.groupCount = (blockCount - firstDataBlock + blocksPerGroup - 1) / blocksPerGroup;
+
+        this.journal = readJournal(sb);
+    }
+
+    /**
+     * Works out what the journal supersedes, on a card that was not shut down cleanly.
+     *
+     * <p>This runs before anything else reads the filesystem, and reads only through the
+     * device: the journal describes the card, so it cannot be read through itself. A
+     * cleanly unmounted card has an empty journal and this does nothing.
+     */
+    private Ext4Journal readJournal(ByteBuffer sb) {
+        if (isClean() && (incompatibleFeatures & INCOMPAT_NEEDS_RECOVERY) == 0) return null;
+        if ((compatibleFeatures & COMPAT_HAS_JOURNAL) == 0) return null;
+        if ((incompatibleFeatures & INCOMPAT_JOURNAL_DEV) != 0) return null;
+
+        long journalInode = sb.getInt(0xE0) & 0xFFFFFFFFL;
+        if (journalInode < 1 || journalInode > inodeCount) return null;
+        try {
+            return Ext4Journal.read(this, inode(journalInode));
+        } catch (IOException | RuntimeException e) {
+            // A card that will not give up its journal still has to open.
+            return null;
+        }
     }
 
     /** Opens the filesystem on a partition device or image file. */
@@ -171,7 +208,7 @@ public class Ext4FileSystem implements Closeable {
 
         long tableBlock = inodeTableBlock(group);
         long offset = tableBlock * (long) blockSize + indexInGroup * inodeSize;
-        return new Ext4Inode(number, device.read(offset, Math.min(inodeSize, 256)));
+        return new Ext4Inode(number, read(offset, Math.min(inodeSize, 256)));
     }
 
     /** Byte offset of an inode's record within the filesystem. */
@@ -184,7 +221,7 @@ public class Ext4FileSystem implements Closeable {
     private long inodeTableBlock(long group) throws IOException {
         // The group descriptor table follows the superblock's block.
         long tableStart = (firstDataBlock + 1) * (long) blockSize;
-        ByteBuffer descriptor = device.read(tableStart + group * descriptorSize, descriptorSize);
+        ByteBuffer descriptor = read(tableStart + group * descriptorSize, descriptorSize);
 
         long low = descriptor.getInt(0x08) & 0xFFFFFFFFL;
         long high = descriptorSize >= 64 ? (descriptor.getInt(0x28) & 0xFFFFFFFFL) : 0;
@@ -289,7 +326,7 @@ public class Ext4FileSystem implements Closeable {
             java.util.Arrays.fill(target, 0, blockSize, (byte) 0);
             return false;
         }
-        device.readInto(physical * (long) blockSize, target, 0, blockSize);
+        readInto(physical * (long) blockSize, target, 0, blockSize);
         return true;
     }
 
@@ -406,6 +443,8 @@ public class Ext4FileSystem implements Closeable {
         if (!isWritable()) {
             throw new Ext4Exception("This filesystem was opened read-only");
         }
+        String blocked = journalBlockedReason();
+        if (!blocked.isEmpty()) throw new Ext4Exception(blocked);
         if (!inode.isRegularFile()) {
             throw new Ext4Exception("Inode " + inode.number() + " is not a regular file");
         }
@@ -465,10 +504,10 @@ public class Ext4FileSystem implements Closeable {
     public String deleteBlockedReason() {
         if (!isWritable()) return "This card was opened for reading only.";
         if (!isClean() || (incompatibleFeatures & INCOMPAT_NEEDS_RECOVERY) != 0) {
-            return "This card was not shut down cleanly, so changes to it may not have "
-                    + "reached the disk yet — on a journalled filesystem they are sitting in "
-                    + "the journal. WhalePi Host does not replay a journal, and removing files "
-                    + "from underneath one would corrupt the card.\n\n"
+            return "This card was not shut down cleanly, so changes to it are still sitting in "
+                    + "its journal rather than in the places they belong. WhalePi Host reads "
+                    + "through the journal so that the newest recordings download correctly, "
+                    + "but removing files from underneath one would corrupt the card.\n\n"
                     + "Put the card back in the WhalePi and shut it down properly, or mount it "
                     + "once on a Linux machine, then try again. Reading and downloading still "
                     + "work in the meantime.";
@@ -498,6 +537,83 @@ public class Ext4FileSystem implements Closeable {
         String blocked = deleteBlockedReason();
         if (!blocked.isEmpty()) throw new Ext4Exception(blocked);
         return new Ext4Deleter(this, progress).delete(parent, name);
+    }
+
+    // -------------------------------------------------------------- reading blocks
+
+    /**
+     * Reads bytes of the filesystem, taking any block from the journal when the journal
+     * holds a newer committed copy of it.
+     *
+     * <p>Every read that is trying to find out what is <em>on</em> the card goes through
+     * here. The write paths deliberately do not: they read a block in order to hand it
+     * back changed, and while the journal has anything outstanding writing is refused
+     * anyway.
+     */
+    private void readInto(long offset, byte[] target, int targetOffset, int length)
+            throws IOException {
+        if (journal == null || journal.blockCount() == 0) {
+            device.readInto(offset, target, targetOffset, length);
+            return;
+        }
+        int done = 0;
+        while (done < length) {
+            long position = offset + done;
+            long block = Math.floorDiv(position, blockSize);
+            int within = (int) (position - block * (long) blockSize);
+            int take = Math.min(blockSize - within, length - done);
+
+            if (journal.holds(block)) {
+                System.arraycopy(journal.block(block), within, target, targetOffset + done, take);
+            } else {
+                device.readInto(position, target, targetOffset + done, take);
+            }
+            done += take;
+        }
+    }
+
+    /** As {@link #readInto}, into a fresh little-endian buffer. */
+    private ByteBuffer read(long offset, int length) throws IOException {
+        byte[] out = new byte[length];
+        readInto(offset, out, 0, length);
+        return ByteBuffer.wrap(out).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+    }
+
+    /** How many blocks are being read from the journal rather than from the card. */
+    public int journalledBlocks() {
+        return journal == null ? 0 : journal.blockCount();
+    }
+
+    /** How many finished transactions the journal held. */
+    public int journalledTransactions() {
+        return journal == null ? 0 : journal.transactionCount();
+    }
+
+    /**
+     * Why the journal of an unclean card could not be used, or "" when there was no
+     * journal to read or nothing stood in the way of reading it.
+     */
+    public String journalDeclinedReason() {
+        return journal == null ? "" : journal.declinedReason();
+    }
+
+    /**
+     * Why a card being read through its journal cannot be written to, or "" when it can.
+     *
+     * <p>Reading such a card is exactly right: the journal holds the newest version of
+     * every block it names, and that is what gets served. Writing to it is not. The
+     * blocks being read are not the blocks that would be written, so a change would land
+     * underneath the journal and be undone the moment a Linux machine replayed it —
+     * or worse, land in a block the journal is about to overwrite with something else.
+     */
+    public String journalBlockedReason() {
+        if (journalledBlocks() == 0) return "";
+        return "This card was not shut down cleanly, and WhalePi Host is reading it through the "
+                + "changes still waiting in its journal. Those changes have not reached the "
+                + "places they belong, so writing to the card now would write underneath them.\n\n"
+                + "Downloading is not affected. To change the card, put it back in the WhalePi "
+                + "and shut it down properly, or mount it once on a Linux machine, then try "
+                + "again.";
     }
 
     // -------------------------------------------------- internals for the deleter
@@ -610,7 +726,7 @@ public class Ext4FileSystem implements Closeable {
             } else {
                 long child = (node.getInt(at + 4) & 0xFFFFFFFFL)
                         | ((long) (node.getShort(at + 8) & 0xFFFF) << 32);
-                ByteBuffer childNode = device.read(child * (long) blockSize, blockSize);
+                ByteBuffer childNode = read(child * (long) blockSize, blockSize);
                 result.addAll(readExtentTree(childNode, recursionDepth + 1));
             }
         }
@@ -663,7 +779,7 @@ public class Ext4FileSystem implements Closeable {
             for (long i = 0; i < span && out.size() < wanted; i++) out.add(0L);
             return;
         }
-        ByteBuffer table = device.read(block * (long) blockSize, blockSize);
+        ByteBuffer table = read(block * (long) blockSize, blockSize);
         for (int i = 0; i < pointersPerBlock && out.size() < wanted; i++) {
             long pointer = table.getInt(i * 4) & 0xFFFFFFFFL;
             if (level == 1) {
