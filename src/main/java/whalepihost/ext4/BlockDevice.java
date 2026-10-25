@@ -8,6 +8,7 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.channels.FileChannel;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
@@ -34,7 +35,7 @@ public class BlockDevice implements Closeable {
     /** Roughly 8 MB of cached chunks: enough for the metadata of a large tree. */
     private static final int MAX_CACHED_CHUNKS = 128;
 
-    private final RandomAccessFile file;
+    private final Closeable handle;
     private final FileChannel channel;
     private final String name;
     private final long base;
@@ -71,8 +72,10 @@ public class BlockDevice implements Closeable {
         this.name = region.toString();
         this.base = region.offset();
         this.writable = forWriting;
-        this.file = new RandomAccessFile(region.path().toFile(), forWriting ? "rw" : "r");
-        this.channel = file.getChannel();
+
+        Opened opened = open(region.path(), forWriting);
+        this.handle = opened.handle();
+        this.channel = opened.channel();
 
         if (region.length() > 0) {
             // A partition table already said how long the region is, and asking the
@@ -232,6 +235,41 @@ public class BlockDevice implements Closeable {
     @Override
     public void close() throws IOException {
         cache.clear();
-        file.close();
+        handle.close();
+    }
+
+    /** An open device: the channel to work through, and the thing to close. */
+    private record Opened(FileChannel channel, Closeable handle) { }
+
+    /**
+     * Opens a device for reading, or for reading and writing.
+     *
+     * <p>The two are opened differently, and on Windows they have to be.
+     * {@link RandomAccessFile} is what reads a raw device everywhere, but its
+     * {@code "rw"} mode asks the system to create the file if it is missing — which
+     * reaches Windows as {@code OPEN_ALWAYS}, and {@code CreateFile} refuses that for a
+     * physical drive: a disk must be opened {@code OPEN_EXISTING}. So every write open
+     * failed, whether or not the program was elevated, and the card came up read-only
+     * with nothing but a "run as administrator" message to show for it.
+     *
+     * <p>A channel opened with {@code READ} and {@code WRITE} and nothing else asks for
+     * {@code OPEN_EXISTING}, which Windows accepts. If it is refused anyway the old way
+     * is still tried, since on macOS and Linux opening a device node read-write is
+     * perfectly ordinary — there the only thing that ever refuses is permission, and
+     * then both ways fail alike.
+     */
+    private static Opened open(Path path, boolean forWriting) throws IOException {
+        if (!forWriting) {
+            RandomAccessFile file = new RandomAccessFile(path.toFile(), "r");
+            return new Opened(file.getChannel(), file);
+        }
+        try {
+            FileChannel channel = FileChannel.open(path, StandardOpenOption.READ,
+                    StandardOpenOption.WRITE);
+            return new Opened(channel, channel);
+        } catch (IOException | RuntimeException e) {
+            RandomAccessFile file = new RandomAccessFile(path.toFile(), "rw");
+            return new Opened(file.getChannel(), file);
+        }
     }
 }
