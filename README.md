@@ -55,6 +55,20 @@ partition: superblock, block group descriptors, inodes, extent trees and directo
 mounts nothing, installs nothing, loads no kernel extension and writes nothing to the card. The
 unmounted data partition simply appears in the card list, ready to read.
 
+### Finding the partition
+
+Getting to the partition is the one part of this that differs by platform:
+
+| Platform | How the data partition is reached |
+|---|---|
+| macOS | `diskutil` lists every partition of an external disk, and each has a device node of its own (`/dev/rdisk6s2`), so the filesystem starts at byte zero of it. |
+| Windows | Windows hands out drive letters, not partition devices, and gives no letter at all to a partition it does not recognise — so there is no name for the data partition to open. WhalePi Host opens the whole disk instead (`\\.\PhysicalDrive1`), reads the MBR or GPT to find where the partition starts, and reads the filesystem through that region of the disk. |
+| Linux | The system mounts ext4 itself, so there is nothing to find. |
+
+On Windows the partition table is checked rather than trusted: a partition is offered only if an
+ext4 superblock really is at the start of it, and a GPT is accepted only if both of the
+checksums it carries agree. Only removable and USB disks are looked at.
+
 ### Permission to read the disk
 
 Reading a partition directly means opening its device node, and the operating system guards
@@ -63,7 +77,7 @@ those:
 | Platform | What is needed |
 |---|---|
 | macOS | Raw disks are `root:operator`. Join that group once: `sudo dseditgroup -o edit -a $USER -t user operator`, then log out and back in. WhalePi Host shows this command, with your user name filled in, when it is needed. |
-| Windows | Run WhalePi Host as Administrator. |
+| Windows | A whole disk opens for administrators alone. Right-click WhalePi Host and choose "Run as administrator". WhalePi Host says so, with the card listed as needing permission, when it finds a card it is not allowed to open. |
 | Linux | Usually already fine; otherwise join the `disk` group. |
 
 That is a permission change, not a system change: nothing is installed and no kernel extension

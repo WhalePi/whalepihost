@@ -2,11 +2,11 @@ package whalepihost.model;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 
+import whalepihost.ext4.DeviceRegion;
 import whalepihost.ext4.Ext4Deleter;
 import whalepihost.ext4.Ext4DirEntry;
 import whalepihost.ext4.Ext4FileSystem;
@@ -24,7 +24,11 @@ public class Ext4CardSource implements CardSource {
     private final Ext4FileSystem fs;
     private final String label;
 
-    public Ext4CardSource(Path device, String label) throws IOException {
+    /**
+     * @param device the partition to read: a whole partition device on macOS and Linux,
+     *               or a region of {@code \\.\PhysicalDriveN} on Windows
+     */
+    public Ext4CardSource(DeviceRegion device, String label) throws IOException {
         this.label = label;
         // Try read-write first so the Settings tab can save. Raw devices are writable
         // by root alone, so this normally falls back and the card opens read-only.

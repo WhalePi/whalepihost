@@ -19,6 +19,12 @@ import java.util.Map;
  * sector boundary. Every read here is therefore served out of sector-aligned chunks,
  * which are cached — ext4 metadata is read in small scattered pieces, and without a
  * cache each inode lookup would cost a fresh device read.
+ *
+ * <p>Offsets passed in are relative to a {@link DeviceRegion}, not to the device. On
+ * macOS and Linux the region is the whole partition device and the two are the same
+ * thing; on Windows the region is a partition inside {@code \\.\PhysicalDriveN}, so
+ * every read is shifted by the partition's offset and stops at its end. Since a
+ * partition starts on a sector boundary, shifted reads stay aligned.
  */
 public class BlockDevice implements Closeable {
 
@@ -31,6 +37,7 @@ public class BlockDevice implements Closeable {
     private final RandomAccessFile file;
     private final FileChannel channel;
     private final String name;
+    private final long base;
     private final long size;
     private final boolean writable;
 
@@ -42,7 +49,7 @@ public class BlockDevice implements Closeable {
     };
 
     public BlockDevice(Path path) throws IOException {
-        this(path, false);
+        this(DeviceRegion.whole(path), false);
     }
 
     /**
@@ -50,17 +57,35 @@ public class BlockDevice implements Closeable {
      *                   so this fails for an ordinary account even when reading works.
      */
     public BlockDevice(Path path, boolean forWriting) throws IOException {
-        this.name = path.toString();
+        this(DeviceRegion.whole(path), forWriting);
+    }
+
+    /**
+     * Opens one region of a device or image: a partition inside a whole disk, or the
+     * whole of a partition device.
+     *
+     * @param forWriting open read-write. Raw devices are usually {@code root:rw},
+     *                   so this fails for an ordinary account even when reading works.
+     */
+    public BlockDevice(DeviceRegion region, boolean forWriting) throws IOException {
+        this.name = region.toString();
+        this.base = region.offset();
         this.writable = forWriting;
-        this.file = new RandomAccessFile(path.toFile(), forWriting ? "rw" : "r");
+        this.file = new RandomAccessFile(region.path().toFile(), forWriting ? "rw" : "r");
         this.channel = file.getChannel();
 
-        long length = channel.size();
-        if (length <= 0) {
-            // Character devices report zero length; fall back to what the OS knows.
-            length = probeSize();
+        if (region.length() > 0) {
+            // A partition table already said how long the region is, and asking the
+            // device would mean probing a disk we are only allowed a part of.
+            this.size = region.length();
+        } else {
+            long length = channel.size();
+            if (length <= 0) {
+                // Character devices report zero length; fall back to what the OS knows.
+                length = probeSize();
+            }
+            this.size = Math.max(0, length - base);
         }
-        this.size = length;
     }
 
     /** Device or image this is reading. */
@@ -72,7 +97,7 @@ public class BlockDevice implements Closeable {
         return writable;
     }
 
-    /** Total bytes, or 0 if the device would not say. */
+    /** Bytes in this region, or 0 if the device would not say how long it is. */
     public long size() {
         return size;
     }
@@ -141,7 +166,7 @@ public class BlockDevice implements Closeable {
         ByteBuffer buffer = ByteBuffer.wrap(chunk);
         int written = 0;
         while (buffer.hasRemaining()) {
-            int n = channel.write(buffer, chunkStart + written);
+            int n = channel.write(buffer, base + chunkStart + written);
             if (n <= 0) throw new IOException("Device refused the write at " + chunkStart);
             written += n;
         }
@@ -157,22 +182,32 @@ public class BlockDevice implements Closeable {
         byte[] cached = cache.get(chunkStart);
         if (cached != null) return cached;
 
-        ByteBuffer buffer = ByteBuffer.allocate(CHUNK);
+        // A region must not be read past its end: the next partition lies there.
+        int wanted = CHUNK;
+        if (size > 0) {
+            long remaining = size - chunkStart;
+            if (remaining <= 0) {
+                throw new EOFException("Nothing to read at offset " + chunkStart + " of " + name);
+            }
+            if (remaining < CHUNK) wanted = (int) remaining;
+        }
+
+        ByteBuffer buffer = ByteBuffer.allocate(wanted);
         int read = 0;
-        while (read < CHUNK) {
-            int n = channel.read(buffer, chunkStart + read);
+        while (read < wanted) {
+            int n = channel.read(buffer, base + chunkStart + read);
             if (n <= 0) break;
             read += n;
         }
         if (read <= 0) {
             throw new EOFException("Nothing to read at offset " + chunkStart + " of " + name);
         }
-        byte[] chunk = read == CHUNK ? buffer.array() : java.util.Arrays.copyOf(buffer.array(), read);
+        byte[] chunk = read == wanted ? buffer.array() : java.util.Arrays.copyOf(buffer.array(), read);
         cache.put(chunkStart, chunk);
         return chunk;
     }
 
-    /** Binary search for the end of a device that reports no length. */
+    /** Binary search for the end of a device that reports no length, in device bytes. */
     private long probeSize() {
         ByteBuffer one = ByteBuffer.allocate(CHUNK);
         long low = 0;

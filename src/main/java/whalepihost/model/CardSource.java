@@ -4,6 +4,8 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.nio.file.Path;
 
+import whalepihost.ext4.DeviceRegion;
+
 /**
  * An opened card, ready to be scanned.
  *
@@ -93,7 +95,7 @@ public interface CardSource extends Closeable {
 
     /** Opens whatever kind of card {@code volume} refers to. */
     static CardSource open(Volume volume) throws IOException {
-        Path device = volume.device();
+        DeviceRegion device = volume.device();
         if (device != null) return new Ext4CardSource(device, volume.label());
 
         Path path = volume.path();

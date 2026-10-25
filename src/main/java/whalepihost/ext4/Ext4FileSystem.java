@@ -163,7 +163,15 @@ public class Ext4FileSystem implements Closeable {
 
     /** Opens the filesystem on a partition device or image file. */
     public static Ext4FileSystem open(Path deviceOrImage) throws IOException {
-        BlockDevice device = new BlockDevice(deviceOrImage);
+        return open(DeviceRegion.whole(deviceOrImage));
+    }
+
+    /**
+     * Opens the filesystem in one region of a device: on Windows a partition inside a
+     * whole disk, elsewhere the whole of a partition device.
+     */
+    public static Ext4FileSystem open(DeviceRegion region) throws IOException {
+        BlockDevice device = new BlockDevice(region, false);
         try {
             return new Ext4FileSystem(device);
         } catch (IOException | RuntimeException e) {
@@ -174,7 +182,12 @@ public class Ext4FileSystem implements Closeable {
 
     /** Quick check for an ext4 superblock, used to tell a card from any other disk. */
     public static boolean looksLikeExt4(Path deviceOrImage) {
-        try (BlockDevice device = new BlockDevice(deviceOrImage)) {
+        return looksLikeExt4(DeviceRegion.whole(deviceOrImage));
+    }
+
+    /** Quick check for an ext4 superblock in one region of a device. */
+    public static boolean looksLikeExt4(DeviceRegion region) {
+        try (BlockDevice device = new BlockDevice(region, false)) {
             ByteBuffer sb = device.read(SUPERBLOCK_OFFSET, 64);
             return (sb.getShort(0x38) & 0xFFFF) == SUPERBLOCK_MAGIC;
         } catch (IOException | RuntimeException e) {
@@ -367,7 +380,12 @@ public class Ext4FileSystem implements Closeable {
      * macOS and Windows this needs the program to be running elevated.
      */
     public static Ext4FileSystem openForWriting(Path deviceOrImage) throws IOException {
-        BlockDevice device = new BlockDevice(deviceOrImage, true);
+        return openForWriting(DeviceRegion.whole(deviceOrImage));
+    }
+
+    /** Opens one region of a device for writing as well as reading. */
+    public static Ext4FileSystem openForWriting(DeviceRegion region) throws IOException {
+        BlockDevice device = new BlockDevice(region, true);
         try {
             return new Ext4FileSystem(device);
         } catch (IOException | RuntimeException e) {
